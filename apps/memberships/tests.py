@@ -3,7 +3,7 @@ from django.test import TestCase
 
 from apps.accounts.models import User
 from apps.groups.models import Group
-
+from .forms import MembershipForm
 from .models import Membership
 from .services.membership_service import (
     create_membership,
@@ -164,3 +164,52 @@ class MembershipModelTests(TestCase):
                 group=self.group,
                 membership_number="TST-0001",
             )
+
+class MembershipFormTests(TestCase):
+    def setUp(self):
+        self.group = Group.objects.create(
+            name="Test Group",
+            code="TST",
+        )
+
+        self.user = User.objects.create_user(
+            email="formtest@example.com",
+            password="TestPassword123!",
+        )
+
+    def test_membership_form_contains_expected_fields(self):
+        form = MembershipForm()
+
+        expected_fields = {
+            "user",
+            "group",
+            "role",
+            "status",
+            "notes",
+        }
+
+        self.assertEqual(
+            set(form.fields.keys()),
+            expected_fields,
+        )
+
+    def test_membership_number_is_not_in_form(self):
+        form = MembershipForm()
+
+        self.assertNotIn(
+            "membership_number",
+            form.fields,
+        )
+
+    def test_membership_form_is_valid(self):
+        form = MembershipForm(
+            data={
+                "user": self.user.pk,
+                "group": self.group.pk,
+                "role": Membership.Role.MEMBER,
+                "status": Membership.Status.ACTIVE,
+                "notes": "Test membership",
+            }
+        )
+
+        self.assertTrue(form.is_valid())
