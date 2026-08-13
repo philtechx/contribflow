@@ -23,6 +23,7 @@ class GroupAdmin(admin.ModelAdmin):
 
     search_fields = (
         "name",
+        "code",
         "phone",
         "email",
         "tin",
@@ -31,6 +32,7 @@ class GroupAdmin(admin.ModelAdmin):
 
     readonly_fields = (
         "id",
+        "code",
         "created_at",
         "updated_at",
     )
