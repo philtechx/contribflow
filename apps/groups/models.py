@@ -15,6 +15,11 @@ class Group(models.Model):
         unique=True,
     )
 
+    code = models.CharField(
+    max_length=10,
+    unique=True,
+    )
+
     slogan = models.CharField(
         max_length=255,
         blank=True,

@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     # My Apps
     "apps.accounts",
     "apps.groups",
+    "apps.memberships",
 ]
 
 MIDDLEWARE = [
