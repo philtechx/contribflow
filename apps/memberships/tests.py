@@ -1,20 +1,25 @@
-from .services.membership_permissions import can_manage_memberships
 from django.db import IntegrityError
-from .forms import MembershipForm
-from django.urls import reverse
 from django.test import TestCase
+from django.urls import reverse
 
 from apps.accounts.models import User
 from apps.groups.models import Group
+
 from .forms import MembershipForm
 from .models import Membership
+from .services.membership_permissions import can_manage_memberships
 from .services.membership_service import (
     create_membership,
     generate_membership_number,
 )
 
 
+# ============================================================
+# Membership Service Tests
+# ============================================================
+
 class MembershipServiceTests(TestCase):
+
     def setUp(self):
         self.group = Group.objects.create(
             name="Test Group",
@@ -38,7 +43,10 @@ class MembershipServiceTests(TestCase):
     def test_generate_first_membership_number(self):
         number = generate_membership_number(self.group)
 
-        self.assertEqual(number, "TST-0001")
+        self.assertEqual(
+            number,
+            "TST-0001",
+        )
 
     def test_create_membership_generates_number_automatically(self):
         membership = create_membership(
@@ -108,7 +116,12 @@ class MembershipServiceTests(TestCase):
         )
 
 
+# ============================================================
+# Membership Model Tests
+# ============================================================
+
 class MembershipModelTests(TestCase):
+
     def setUp(self):
         self.group = Group.objects.create(
             name="Test Group",
@@ -168,7 +181,13 @@ class MembershipModelTests(TestCase):
                 membership_number="TST-0001",
             )
 
+
+# ============================================================
+# Membership Form Tests
+# ============================================================
+
 class MembershipFormTests(TestCase):
+
     def setUp(self):
         self.group = Group.objects.create(
             name="Test Group",
@@ -178,6 +197,29 @@ class MembershipFormTests(TestCase):
         self.user = User.objects.create_user(
             email="formtest@example.com",
             password="TestPassword123!",
+        )
+
+        self.group_a = Group.objects.create(
+            name="Group A",
+            code="FORM-A",
+        )
+
+        self.group_b = Group.objects.create(
+            name="Group B",
+            code="FORM-B",
+        )
+
+        self.admin = User.objects.create_user(
+            email="form-admin@example.com",
+            password="TestPassword123!",
+        )
+
+        Membership.objects.create(
+            user=self.admin,
+            group=self.group_a,
+            membership_number="FORM-0001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
         )
 
     def test_membership_form_contains_expected_fields(self):
@@ -215,10 +257,72 @@ class MembershipFormTests(TestCase):
             }
         )
 
-        self.assertTrue(form.is_valid())
+        # group must be authorized when a user is supplied.
+        form = MembershipForm(
+            data={
+                "user": self.user.pk,
+                "group": self.group_a.pk,
+                "role": Membership.Role.MEMBER,
+                "status": Membership.Status.ACTIVE,
+                "notes": "Test membership",
+            },
+            user=self.admin,
+        )
 
-# MembershipPermissionsTests
+        self.assertTrue(
+            form.is_valid()
+        )
+
+    def test_admin_only_sees_manageable_groups(self):
+        form = MembershipForm(
+            user=self.admin,
+        )
+
+        groups = list(
+            form.fields["group"].queryset
+        )
+
+        self.assertEqual(
+            groups,
+            [self.group_a],
+        )
+
+    def test_unauthenticated_form_has_no_groups(self):
+        form = MembershipForm()
+
+        self.assertEqual(
+            form.fields["group"].queryset.count(),
+            0,
+        )
+
+    def test_admin_cannot_select_unmanageable_group(self):
+        form = MembershipForm(
+            data={
+                "user": self.user.pk,
+                "group": self.group_b.pk,
+                "role": Membership.Role.MEMBER,
+                "status": Membership.Status.ACTIVE,
+                "notes": "",
+            },
+            user=self.admin,
+        )
+
+        self.assertFalse(
+            form.is_valid()
+        )
+
+        self.assertIn(
+            "group",
+            form.errors,
+        )
+
+
+# ============================================================
+# Membership Permission Tests
+# ============================================================
+
 class MembershipPermissionTests(TestCase):
+
     def setUp(self):
         self.group = Group.objects.create(
             name="Permission Test Group",
@@ -271,7 +375,9 @@ class MembershipPermissionTests(TestCase):
 
     def test_superuser_can_manage_any_group(self):
         self.other_user.is_superuser = True
-        self.other_user.save(update_fields=["is_superuser"])
+        self.other_user.save(
+            update_fields=["is_superuser"]
+        )
 
         self.assertTrue(
             can_manage_memberships(
@@ -319,7 +425,9 @@ class MembershipPermissionTests(TestCase):
         )
 
         membership.status = Membership.Status.INACTIVE
-        membership.save(update_fields=["status"])
+        membership.save(
+            update_fields=["status"]
+        )
 
         self.assertFalse(
             can_manage_memberships(
@@ -328,8 +436,13 @@ class MembershipPermissionTests(TestCase):
             )
         )
 
-# MembershipViewPermissionTests
+
+# ============================================================
+# Membership View Permission Tests
+# ============================================================
+
 class MembershipViewPermissionTests(TestCase):
+
     def setUp(self):
         self.group_a = Group.objects.create(
             name="Group A",
@@ -390,7 +503,10 @@ class MembershipViewPermissionTests(TestCase):
             reverse("memberships:list")
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
 
     def test_group_admin_only_sees_own_group_memberships(self):
         self.client.login(
@@ -468,52 +584,34 @@ class MembershipViewPermissionTests(TestCase):
             403,
         )
 
-# MembershipFormTests
-class MembershipFormTests(TestCase):
-
-    def setUp(self):
-        self.group_a = Group.objects.create(
-            name="Group A",
-            code="FORM-A",
-        )
-
-        self.group_b = Group.objects.create(
-            name="Group B",
-            code="FORM-B",
-        )
-
-        self.admin = User.objects.create_user(
-            email="form-admin@example.com",
+    def test_admin_cannot_move_membership_to_other_group(self):
+        self.client.login(
+            email="admin@example.com",
             password="TestPassword123!",
         )
 
-        Membership.objects.create(
-            user=self.admin,
+        membership = Membership.objects.get(
+            user=self.member,
             group=self.group_a,
-            membership_number="FORM-0001",
-            role=Membership.Role.ADMIN,
-            status=Membership.Status.ACTIVE,
         )
 
-    def test_admin_only_sees_manageable_groups(self):
-        form = MembershipForm(
-            user=self.admin,
-        )
-
-        groups = list(
-            form.fields["group"]
-            .queryset
+        response = self.client.post(
+            reverse(
+                "memberships:update",
+                kwargs={
+                    "pk": membership.pk,
+                },
+            ),
+            {
+                "user": self.member.pk,
+                "group": self.group_b.pk,
+                "role": Membership.Role.MEMBER,
+                "status": Membership.Status.ACTIVE,
+                "notes": "",
+            },
         )
 
         self.assertEqual(
-            groups,
-            [self.group_a],
-        )
-
-    def test_unauthenticated_form_has_no_groups(self):
-        form = MembershipForm()
-
-        self.assertEqual(
-            form.fields["group"].queryset.count(),
-            0,
+            response.status_code,
+            403,
         )

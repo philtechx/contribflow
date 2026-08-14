@@ -17,4 +17,14 @@ urlpatterns = [
         views.membership_create,
         name="create",
     ),
+    path(
+        "<uuid:pk>/",
+        views.membership_detail,
+        name="detail",
+    ),
+    path(
+        "<uuid:pk>/edit/",
+        views.membership_update,
+        name="update",
+    ),
 ]
