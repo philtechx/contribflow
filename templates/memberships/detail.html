@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+
+{% block title %}
+    Membership Details | ContribFlow
+{% endblock %}
+
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+
+    <div>
+        <h1 class="h3 mb-1">Membership Details</h1>
+
+        <p class="text-muted mb-0">
+            View membership information.
+        </p>
+    </div>
+
+    <div class="d-flex gap-2">
+
+        <a
+            href="{% url 'memberships:list' %}"
+            class="btn btn-outline-secondary"
+        >
+            Back
+        </a>
+
+       <a
+            href="{% url 'memberships:update' membership.pk %}"
+            class="btn btn-primary"
+        >
+            Edit
+        </a>
+
+    </div>
+
+</div>
+
+
+<div class="row g-4">
+
+    <!-- Membership Information -->
+
+    <div class="col-lg-8">
+
+        <div class="card shadow-sm">
+
+            <div class="card-header bg-white">
+
+                <h5 class="mb-0">
+                    Membership Information
+                </h5>
+
+            </div>
+
+            <div class="card-body">
+
+                <div class="row g-4">
+
+                    <div class="col-md-6">
+
+                        <small class="text-muted d-block">
+                            Membership Number
+                        </small>
+
+                        <strong>
+                            {{ membership.membership_number }}
+                        </strong>
+
+                    </div>
+
+
+                    <div class="col-md-6">
+
+                        <small class="text-muted d-block">
+                            Group
+                        </small>
+
+                        <strong>
+                            {{ membership.group.name }}
+                        </strong>
+
+                    </div>
+
+
+                    <div class="col-md-6">
+
+                        <small class="text-muted d-block">
+                            Role
+                        </small>
+
+                        <strong>
+                            {{ membership.get_role_display }}
+                        </strong>
+
+                    </div>
+
+
+                    <div class="col-md-6">
+
+                        <small class="text-muted d-block">
+                            Status
+                        </small>
+
+                        {% if membership.status == "active" %}
+
+                            <span class="badge text-bg-success">
+                                {{ membership.get_status_display }}
+                            </span>
+
+                        {% elif membership.status == "inactive" %}
+
+                            <span class="badge text-bg-secondary">
+                                {{ membership.get_status_display }}
+                            </span>
+
+                        {% elif membership.status == "suspended" %}
+
+                            <span class="badge text-bg-warning">
+                                {{ membership.get_status_display }}
+                            </span>
+
+                        {% endif %}
+
+                    </div>
+
+
+                    <div class="col-md-6">
+
+                        <small class="text-muted d-block">
+                            Joined
+                        </small>
+
+                        <strong>
+                            {{ membership.joined_at|date:"d M Y" }}
+                        </strong>
+
+                    </div>
+
+
+                    <div class="col-md-6">
+
+                        <small class="text-muted d-block">
+                            Created
+                        </small>
+
+                        <strong>
+                            {{ membership.created_at|date:"d M Y H:i" }}
+                        </strong>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- Member Information -->
+
+    <div class="col-lg-4">
+
+        <div class="card shadow-sm">
+
+            <div class="card-header bg-white">
+
+                <h5 class="mb-0">
+                    Member
+                </h5>
+
+            </div>
+
+            <div class="card-body">
+
+                <div class="mb-3">
+
+                    <small class="text-muted d-block">
+                        Email
+                    </small>
+
+                    <strong>
+                        {{ membership.user.email }}
+                    </strong>
+
+                </div>
+
+
+                <div class="mb-3">
+
+                    <small class="text-muted d-block">
+                        Name
+                    </small>
+
+                    <strong>
+
+                        {% if membership.user.get_full_name %}
+                            {{ membership.user.get_full_name }}
+                        {% else %}
+                            —
+                        {% endif %}
+
+                    </strong>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- Notes -->
+
+    <div class="col-12">
+
+        <div class="card shadow-sm">
+
+            <div class="card-header bg-white">
+
+                <h5 class="mb-0">
+                    Notes
+                </h5>
+
+            </div>
+
+            <div class="card-body">
+
+                {% if membership.notes %}
+
+                    <p class="mb-0">
+                        {{ membership.notes|linebreaksbr }}
+                    </p>
+
+                {% else %}
+
+                    <p class="text-muted mb-0">
+                        No notes available.
+                    </p>
+
+                {% endif %}
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

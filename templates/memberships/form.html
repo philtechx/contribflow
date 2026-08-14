@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 
 {% block title %}
-    Add Member | ContribFlow
+    {% if is_update %}
+        Edit Membership | ContribFlow
+    {% else %}
+        Add Member | ContribFlow
+    {% endif %}
 {% endblock %}
 
 {% block content %}
@@ -13,11 +17,23 @@
         <div class="mb-4">
 
             <h1 class="h3 mb-1">
-                Add Member
+
+                {% if is_update %}
+                    Edit Membership
+                {% else %}
+                    Add Member
+                {% endif %}
+
             </h1>
 
             <p class="text-muted">
-                Add a user to a group.
+
+                {% if is_update %}
+                    Update membership information.
+                {% else %}
+                    Add a user to a group.
+                {% endif %}
+
             </p>
 
         </div>
@@ -43,6 +59,8 @@
                     {% endif %}
 
 
+                    <!-- User -->
+
                     <div class="mb-3">
 
                         <label
@@ -55,13 +73,17 @@
                         {{ form.user }}
 
                         {% for error in form.user.errors %}
+
                             <div class="text-danger small mt-1">
                                 {{ error }}
                             </div>
+
                         {% endfor %}
 
                     </div>
 
+
+                    <!-- Group -->
 
                     <div class="mb-3">
 
@@ -75,13 +97,17 @@
                         {{ form.group }}
 
                         {% for error in form.group.errors %}
+
                             <div class="text-danger small mt-1">
                                 {{ error }}
                             </div>
+
                         {% endfor %}
 
                     </div>
 
+
+                    <!-- Role & Status -->
 
                     <div class="row">
 
@@ -95,6 +121,14 @@
                             </label>
 
                             {{ form.role }}
+
+                            {% for error in form.role.errors %}
+
+                                <div class="text-danger small mt-1">
+                                    {{ error }}
+                                </div>
+
+                            {% endfor %}
 
                         </div>
 
@@ -110,10 +144,20 @@
 
                             {{ form.status }}
 
+                            {% for error in form.status.errors %}
+
+                                <div class="text-danger small mt-1">
+                                    {{ error }}
+                                </div>
+
+                            {% endfor %}
+
                         </div>
 
                     </div>
 
+
+                    <!-- Notes -->
 
                     <div class="mb-4">
 
@@ -126,13 +170,23 @@
 
                         {{ form.notes }}
 
+                        {% for error in form.notes.errors %}
+
+                            <div class="text-danger small mt-1">
+                                {{ error }}
+                            </div>
+
+                        {% endfor %}
+
                     </div>
 
+
+                    <!-- Actions -->
 
                     <div class="d-flex justify-content-end gap-2">
 
                         <a
-                            href="{% url 'memberships:list' %}"
+                            href="{% if is_update %}{% url 'memberships:detail' membership.pk %}{% else %}{% url 'memberships:list' %}{% endif %}"
                             class="btn btn-outline-secondary"
                         >
                             Cancel
@@ -142,7 +196,13 @@
                             type="submit"
                             class="btn btn-primary"
                         >
-                            Create Membership
+
+                            {% if is_update %}
+                                Update Membership
+                            {% else %}
+                                Create Membership
+                            {% endif %}
+
                         </button>
 
                     </div>

@@ -10,6 +10,7 @@
 
     <div>
         <h1 class="h3 mb-1">Memberships</h1>
+
         <p class="text-muted mb-0">
             Manage group memberships.
         </p>
@@ -25,6 +26,156 @@
 </div>
 
 
+<!-- Filters -->
+
+<div class="card shadow-sm mb-4">
+
+    <div class="card-body">
+
+        <form
+            method="get"
+            class="row g-3"
+        >
+
+            <!-- Search -->
+
+            <div class="col-md-5">
+
+                <label
+                    for="search"
+                    class="form-label"
+                >
+                    Search
+                </label>
+
+                <input
+                    type="text"
+                    id="search"
+                    name="q"
+                    value="{{ search }}"
+                    class="form-control"
+                    placeholder="Search member, email or membership number..."
+                >
+
+            </div>
+
+
+            <!-- Status -->
+
+            <div class="col-md-3">
+
+                <label
+                    for="status"
+                    class="form-label"
+                >
+                    Status
+                </label>
+
+                <select
+                    id="status"
+                    name="status"
+                    class="form-select"
+                >
+
+                    <option value="">
+                        All statuses
+                    </option>
+
+                    {% for value, label in status_choices %}
+
+                        <option
+                            value="{{ value }}"
+                            {% if selected_status == value %}
+                                selected
+                            {% endif %}
+                        >
+                            {{ label }}
+                        </option>
+
+                    {% endfor %}
+
+                </select>
+
+            </div>
+
+
+            <!-- Role -->
+
+            <div class="col-md-3">
+
+                <label
+                    for="role"
+                    class="form-label"
+                >
+                    Role
+                </label>
+
+                <select
+                    id="role"
+                    name="role"
+                    class="form-select"
+                >
+
+                    <option value="">
+                        All roles
+                    </option>
+
+                    {% for value, label in role_choices %}
+
+                        <option
+                            value="{{ value }}"
+                            {% if selected_role == value %}
+                                selected
+                            {% endif %}
+                        >
+                            {{ label }}
+                        </option>
+
+                    {% endfor %}
+
+                </select>
+
+            </div>
+
+
+            <!-- Buttons -->
+
+            <div class="col-md-1 d-flex align-items-end">
+
+                <button
+                    type="submit"
+                    class="btn btn-primary w-100"
+                >
+                    Search
+                </button>
+
+            </div>
+
+        </form>
+
+
+        {% if search or selected_status or selected_role %}
+
+            <div class="mt-3">
+
+                <a
+                    href="{% url 'memberships:list' %}"
+                    class="btn btn-sm btn-outline-secondary"
+                >
+                    Clear filters
+                </a>
+
+            </div>
+
+        {% endif %}
+
+    </div>
+
+</div>
+
+
+<!-- Memberships -->
+
 <div class="card shadow-sm">
 
     <div class="card-body p-0">
@@ -38,15 +189,39 @@
                     <thead class="table-light">
 
                         <tr>
-                            <th>Membership No.</th>
-                            <th>Member</th>
-                            <th>Group</th>
-                            <th>Role</th>
-                            <th>Status</th>
-                            <th>Joined</th>
+
+                            <th>
+                                Membership No.
+                            </th>
+
+                            <th>
+                                Member
+                            </th>
+
+                            <th>
+                                Group
+                            </th>
+
+                            <th>
+                                Role
+                            </th>
+
+                            <th>
+                                Status
+                            </th>
+
+                            <th>
+                                Joined
+                            </th>
+
+                            <th class="text-end">
+                                Actions
+                            </th>
+
                         </tr>
 
                     </thead>
+
 
                     <tbody>
 
@@ -55,29 +230,86 @@
                             <tr>
 
                                 <td>
+
                                     <strong>
                                         {{ membership.membership_number }}
                                     </strong>
+
                                 </td>
 
+
                                 <td>
-                                    {{ membership.user.email }}
+
+                                    <div>
+                                        {{ membership.user.email }}
+                                    </div>
+
+                                    {% if membership.user.get_full_name %}
+
+                                        <small class="text-muted">
+                                            {{ membership.user.get_full_name }}
+                                        </small>
+
+                                    {% endif %}
+
                                 </td>
+
 
                                 <td>
                                     {{ membership.group.name }}
                                 </td>
 
+
                                 <td>
                                     {{ membership.get_role_display }}
                                 </td>
 
+
                                 <td>
-                                    {{ membership.get_status_display }}
+
+                                    {% if membership.status == "active" %}
+
+                                        <span class="badge text-bg-success">
+                                            {{ membership.get_status_display }}
+                                        </span>
+
+                                    {% elif membership.status == "inactive" %}
+
+                                        <span class="badge text-bg-secondary">
+                                            {{ membership.get_status_display }}
+                                        </span>
+
+                                    {% elif membership.status == "suspended" %}
+
+                                        <span class="badge text-bg-warning">
+                                            {{ membership.get_status_display }}
+                                        </span>
+
+                                    {% else %}
+
+                                        <span class="badge text-bg-secondary">
+                                            {{ membership.get_status_display }}
+                                        </span>
+
+                                    {% endif %}
+
                                 </td>
+
 
                                 <td>
                                     {{ membership.joined_at|date:"d M Y" }}
+                                </td>
+
+
+                                <td class="text-end">
+
+                                    <a
+                                        href="{% url 'memberships:detail' membership.pk %}"
+                                        class="btn btn-sm btn-outline-primary"
+                                    >
+                                        View
+                                    </a>
+
                                 </td>
 
                             </tr>
@@ -94,18 +326,28 @@
 
             <div class="text-center py-5">
 
-                <h5>No memberships found</h5>
+                <h5>
+                    No memberships found
+                </h5>
 
                 <p class="text-muted">
-                    Start by adding the first member.
+                    {% if search or selected_status or selected_role %}
+                        Try changing your search or filters.
+                    {% else %}
+                        Start by adding the first member.
+                    {% endif %}
                 </p>
 
-                <a
-                    href="{% url 'memberships:create' %}"
-                    class="btn btn-primary"
-                >
-                    Add Member
-                </a>
+                {% if not search and not selected_status and not selected_role %}
+
+                    <a
+                        href="{% url 'memberships:create' %}"
+                        class="btn btn-primary"
+                    >
+                        Add Member
+                    </a>
+
+                {% endif %}
 
             </div>
 
