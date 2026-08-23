@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+
+{% block title %}
+    {% if is_update %}
+        Edit Membership | ContribFlow
+    {% else %}
+        Add Member | ContribFlow
+    {% endif %}
+{% endblock %}
+
+{% block content %}
+
+<div class="row justify-content-center">
+
+    <div class="col-lg-8">
+
+        <div class="mb-4">
+
+            <h1 class="h3 mb-1">
+
+                {% if is_update %}
+                    Edit Membership
+                {% else %}
+                    Add Member
+                {% endif %}
+
+            </h1>
+
+            <p class="text-muted">
+
+                {% if is_update %}
+                    Update membership information.
+                {% else %}
+                    Add a user to a group.
+                {% endif %}
+
+            </p>
+
+        </div>
+
+
+        <div class="card shadow-sm">
+
+            <div class="card-body p-4">
+
+                <form method="post">
+
+                    {% csrf_token %}
+
+
+                    {% if form.non_field_errors %}
+
+                        <div class="alert alert-danger">
+
+                            {{ form.non_field_errors }}
+
+                        </div>
+
+                    {% endif %}
+
+
+                    <!-- User -->
+
+                    <div class="mb-3">
+
+                        <label
+                            for="{{ form.user.id_for_label }}"
+                            class="form-label"
+                        >
+                            User
+                        </label>
+
+                        {{ form.user }}
+
+                        {% for error in form.user.errors %}
+
+                            <div class="text-danger small mt-1">
+                                {{ error }}
+                            </div>
+
+                        {% endfor %}
+
+                    </div>
+
+
+                    <!-- Group -->
+
+                    <div class="mb-3">
+
+                        <label
+                            for="{{ form.group.id_for_label }}"
+                            class="form-label"
+                        >
+                            Group
+                        </label>
+
+                        {{ form.group }}
+
+                        {% for error in form.group.errors %}
+
+                            <div class="text-danger small mt-1">
+                                {{ error }}
+                            </div>
+
+                        {% endfor %}
+
+                    </div>
+
+
+                    <!-- Role & Status -->
+
+                    <div class="row">
+
+                        <div class="col-md-6 mb-3">
+
+                            <label
+                                for="{{ form.role.id_for_label }}"
+                                class="form-label"
+                            >
+                                Role
+                            </label>
+
+                            {{ form.role }}
+
+                            {% for error in form.role.errors %}
+
+                                <div class="text-danger small mt-1">
+                                    {{ error }}
+                                </div>
+
+                            {% endfor %}
+
+                        </div>
+
+
+                        <div class="col-md-6 mb-3">
+
+                            <label
+                                for="{{ form.status.id_for_label }}"
+                                class="form-label"
+                            >
+                                Status
+                            </label>
+
+                            {{ form.status }}
+
+                            {% for error in form.status.errors %}
+
+                                <div class="text-danger small mt-1">
+                                    {{ error }}
+                                </div>
+
+                            {% endfor %}
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- Notes -->
+
+                    <div class="mb-4">
+
+                        <label
+                            for="{{ form.notes.id_for_label }}"
+                            class="form-label"
+                        >
+                            Notes
+                        </label>
+
+                        {{ form.notes }}
+
+                        {% for error in form.notes.errors %}
+
+                            <div class="text-danger small mt-1">
+                                {{ error }}
+                            </div>
+
+                        {% endfor %}
+
+                    </div>
+
+
+                    <!-- Actions -->
+
+                    <div class="d-flex justify-content-end gap-2">
+
+                        <a
+                            href="{% if is_update %}{% url 'memberships:detail' membership.pk %}{% else %}{% url 'memberships:list' %}{% endif %}"
+                            class="btn btn-outline-secondary"
+                        >
+                            Cancel
+                        </a>
+
+                        <button
+                            type="submit"
+                            class="btn btn-primary"
+                        >
+
+                            {% if is_update %}
+                                Update Membership
+                            {% else %}
+                                Create Membership
+                            {% endif %}
+
+                        </button>
+
+                    </div>
+
+                </form>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}
