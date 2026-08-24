@@ -24,6 +24,7 @@ from django.conf import settings
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("memberships/", include("apps.memberships.urls")),
+    path("contributions/",include("apps.contributions.urls"),),
 ]
 
 if settings.DEBUG:

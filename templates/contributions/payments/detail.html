@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}
+Payment Details
+{% endblock %}
+
+{% block content %}
+
+<div class="container py-4">
+
+```
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3>Payment Details</h3>
+
+    <a href="{% url 'contributions:payment-list' payment.schedule.pk %}"
+       class="btn btn-secondary">
+        Back to Payments
+    </a>
+</div>
+
+<div class="card shadow-sm">
+    <div class="card-body">
+
+        <table class="table">
+            <tr>
+                <th>Member</th>
+                <td>{{ payment.member }}</td>
+            </tr>
+
+            <tr>
+                <th>Contribution</th>
+                <td>{{ payment.schedule.contribution_type }}</td>
+            </tr>
+
+            <tr>
+                <th>Amount</th>
+                <td>{{ payment.amount }}</td>
+            </tr>
+
+            <tr>
+                <th>Payment Reference</th>
+                <td>{{ payment.reference }}</td>
+            </tr>
+
+            <tr>
+                <th>Notes</th>
+                <td>{{ payment.notes }}</td>
+            </tr>
+
+            <tr>
+                <th>Payment Date</th>
+                <td>{{ payment.payment_date }}</td>
+            </tr>
+
+        </table>
+
+    </div>
+</div>
+```
+
+</div>
+{% endblock %}
