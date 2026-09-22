@@ -55,4 +55,24 @@ urlpatterns = [
         views.payment_detail_view,
         name="payment-detail",
     ),
+    path(
+        "payments/<int:payment_id>/edit/",
+        views.edit_payment_view,
+        name="payment-edit",
+    ),
+    path(
+        "payments/<int:payment_id>/delete/",
+        views.delete_payment_view,
+        name="payment-delete",
+    ),
+    path(
+        "schedules/<int:schedule_id>/waive/",
+        views.waive_contribution_view,
+        name="waive-contribution",
+    ),
+        path(
+        "schedules/<int:schedule_id>/restore/",
+        views.restore_contribution_view,
+        name="restore-contribution",
+    ),
 ]

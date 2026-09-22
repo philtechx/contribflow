@@ -1,13 +1,15 @@
 from decimal import Decimal
 
 from django import forms
-from django.db.models import Sum
 
 from .models import (
     ContributionCategory,
     ContributionPayment,
     ContributionSchedule,
     ContributionType,
+)
+from .services.contribution_payment_service import (
+    calculate_remaining_balance,
 )
 
 
@@ -99,6 +101,7 @@ class ContributionPaymentForm(forms.ModelForm):
 
     class Meta:
         model = ContributionPayment
+
         fields = [
             "amount",
             "payment_date",
@@ -143,54 +146,149 @@ class ContributionPaymentForm(forms.ModelForm):
             ),
         }
 
-    def __init__(self, *args, schedule=None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        *args,
+        schedule=None,
+        payment=None,
+        **kwargs,
+    ):
+        super().__init__(
+            *args,
+            **kwargs,
+        )
 
         self.schedule = schedule
 
+        # If editing, store the current payment.
+        # If creating, this remains None.
+        self.payment = payment
+
     def clean_amount(self):
-        amount = self.cleaned_data.get("amount")
+
+        amount = self.cleaned_data.get(
+            "amount"
+        )
 
         if amount is None:
             return amount
+
+        amount = Decimal(
+            str(amount)
+        )
+
+        # -------------------------------------------------
+        # Validate positive amount
+        # -------------------------------------------------
 
         if amount <= Decimal("0.00"):
             raise forms.ValidationError(
                 "Payment amount must be greater than zero."
             )
 
-        if self.schedule is None:
-            return amount
+        # -------------------------------------------------
+        # Schedule is required
+        # -------------------------------------------------
 
-        if self.schedule.status == ContributionSchedule.Status.WAIVED:
+        if self.schedule is None:
+            raise forms.ValidationError(
+                "Contribution schedule is required."
+            )
+
+        # -------------------------------------------------
+        # Waived schedules cannot receive payments
+        # -------------------------------------------------
+
+        if (
+            self.schedule.status
+            == ContributionSchedule.Status.WAIVED
+        ):
             raise forms.ValidationError(
                 "A waived contribution schedule cannot receive payment."
             )
 
-        total_paid = (
-            ContributionPayment.objects
-            .filter(schedule=self.schedule)
-            .aggregate(total=Sum("amount"))
-            .get("total")
-            or Decimal("0.00")
+        # -------------------------------------------------
+        # Get all payments for this schedule
+        # -------------------------------------------------
+
+        payments = ContributionPayment.objects.filter(
+            schedule=self.schedule
         )
 
-        total_paid = Decimal(str(total_paid))
+        # -------------------------------------------------
+        # When editing, exclude the current payment
+        # -------------------------------------------------
+
+        if self.payment is not None:
+            payments = payments.exclude(
+                pk=self.payment.pk
+            )
+
+        # -------------------------------------------------
+        # Calculate total of other payments
+        # -------------------------------------------------
+
+        total_other_payments = Decimal("0.00")
+
+        for payment in payments:
+            total_other_payments += Decimal(
+                str(payment.amount)
+            )
+
+        # -------------------------------------------------
+        # Calculate maximum amount allowed
+        # -------------------------------------------------
+
+        expected_amount = Decimal(
+            str(self.schedule.expected_amount)
+        )
 
         remaining_balance = (
-            Decimal(str(self.schedule.expected_amount))
-            - total_paid
+            expected_amount
+            - total_other_payments
         )
 
         if remaining_balance < Decimal("0.00"):
             remaining_balance = Decimal("0.00")
 
+        # -------------------------------------------------
+        # Prevent overpayment
+        # -------------------------------------------------
+
         if amount > remaining_balance:
             raise forms.ValidationError(
                 (
-                    "Payment amount cannot exceed the remaining "
-                    f"balance of {remaining_balance:.2f}."
+                    "Payment amount cannot exceed the "
+                    f"remaining balance of "
+                    f"{remaining_balance:.2f}."
                 )
             )
 
         return amount
+
+
+class ContributionWaiverForm(forms.Form):
+
+    reason = forms.CharField(
+        label="Waiver Reason",
+        widget=forms.Textarea(
+            attrs={
+                "class": "form-control",
+                "rows": 4,
+                "placeholder": (
+                    "Enter the reason for waiving this contribution..."
+                ),
+            }
+        ),
+        max_length=1000,
+    )
+
+    def clean_reason(self):
+        reason = self.cleaned_data["reason"].strip()
+
+        if not reason:
+            raise forms.ValidationError(
+                "A reason is required."
+            )
+
+        return reason

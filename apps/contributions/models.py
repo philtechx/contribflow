@@ -1,5 +1,7 @@
 from django.db import models
 
+from django.conf import settings
+
 
 class ContributionCategory(models.Model):
     class Status(models.TextChoices):
@@ -125,6 +127,22 @@ class ContributionSchedule(models.Model):
         choices=Status.choices,
         default=Status.PENDING,
     )
+    waived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="waived_contribution_schedules",
+    )
+
+    waived_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    waived_reason = models.TextField(
+        blank=True,
+    )
 
     created_at = models.DateTimeField(
         auto_now_add=True,
@@ -220,4 +238,49 @@ class ContributionPayment(models.Model):
             f"{self.schedule} - "
             f"{self.amount} - "
             f"{self.payment_date}"
+        )
+
+
+class ContributionWaiver(models.Model):
+
+    class Action(models.TextChoices):
+        WAIVED = "waived", "Waived"
+        RESTORED = "restored", "Restored"
+
+    schedule = models.ForeignKey(
+        ContributionSchedule,
+        on_delete=models.PROTECT,
+        related_name="waiver_history",
+    )
+
+    action = models.CharField(
+        max_length=20,
+        choices=Action.choices,
+    )
+
+    reason = models.TextField()
+
+    performed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="contribution_waiver_actions",
+    )
+
+    performed_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    class Meta:
+        ordering = [
+            "-performed_at",
+        ]
+        verbose_name = "Contribution Waiver History"
+        verbose_name_plural = (
+            "Contribution Waiver Histories"
+        )
+
+    def __str__(self):
+        return (
+            f"{self.schedule} - "
+            f"{self.get_action_display()}"
         )

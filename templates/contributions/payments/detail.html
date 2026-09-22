@@ -5,58 +5,237 @@ Payment Details
 {% endblock %}
 
 {% block content %}
-
 <div class="container py-4">
 
-```
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h3>Payment Details</h3>
+    <!-- Page Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
 
-    <a href="{% url 'contributions:payment-list' payment.schedule.pk %}"
-       class="btn btn-secondary">
-        Back to Payments
-    </a>
-</div>
+        <div>
+            <h3 class="mb-1">
+                Payment Details
+            </h3>
 
-<div class="card shadow-sm">
-    <div class="card-body">
+            <p class="text-muted mb-0">
+                {{ schedule.contribution_type }}
+            </p>
+        </div>
 
-        <table class="table">
-            <tr>
-                <th>Member</th>
-                <td>{{ payment.member }}</td>
-            </tr>
+        <div class="d-flex gap-2">
 
-            <tr>
-                <th>Contribution</th>
-                <td>{{ payment.schedule.contribution_type }}</td>
-            </tr>
+            <a
+                href="{% url 'contributions:payment-list' schedule.pk %}"
+                class="btn btn-secondary"
+            >
+                Back to Payments
+            </a>
 
-            <tr>
-                <th>Amount</th>
-                <td>{{ payment.amount }}</td>
-            </tr>
+            <a
+                href="{% url 'contributions:payment-edit' payment.pk %}"
+                class="btn btn-primary"
+            >
+                Edit Payment
+            </a>
+             <a
+                href="{% url 'contributions:payment-delete' payment.pk %}"
+                class="btn btn-danger"
+            >
+                Delete Payment
+            </a>
 
-            <tr>
-                <th>Payment Reference</th>
-                <td>{{ payment.reference }}</td>
-            </tr>
-
-            <tr>
-                <th>Notes</th>
-                <td>{{ payment.notes }}</td>
-            </tr>
-
-            <tr>
-                <th>Payment Date</th>
-                <td>{{ payment.payment_date }}</td>
-            </tr>
-
-        </table>
+        </div>
 
     </div>
-</div>
-```
+
+
+    <div class="row">
+
+        <!-- Payment Details -->
+        <div class="col-lg-8">
+
+            <div class="card shadow-sm">
+
+                <div class="card-header">
+                    Payment Information
+                </div>
+
+                <div class="card-body">
+
+                    <table class="table table-bordered mb-0">
+
+                        <tr>
+                            <th style="width: 35%;">
+                                Member
+                            </th>
+                            <td>
+                                {{ schedule.membership.user }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <th>
+                                Group
+                            </th>
+                            <td>
+                                {{ schedule.membership.group }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <th>
+                                Contribution
+                            </th>
+                            <td>
+                                {{ schedule.contribution_type }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <th>
+                                Amount
+                            </th>
+                            <td>
+                                <strong>
+                                    TSh {{ payment.amount }}
+                                </strong>
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <th>
+                                Payment Method
+                            </th>
+                            <td>
+                                {{ payment.get_payment_method_display }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <th>
+                                Payment Reference
+                            </th>
+                            <td>
+                                {{ payment.reference|default:"-" }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <th>
+                                Notes
+                            </th>
+                            <td>
+                                {{ payment.notes|default:"-" }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <th>
+                                Payment Date
+                            </th>
+                            <td>
+                                {{ payment.payment_date|date:"d M Y" }}
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <th>
+                                Recorded On
+                            </th>
+                            <td>
+                                {{ payment.created_at|date:"d M Y H:i" }}
+                            </td>
+                        </tr>
+
+                    </table>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- Schedule Summary -->
+        <div class="col-lg-4">
+
+            <div class="card shadow-sm">
+
+                <div class="card-header">
+                    Schedule Summary
+                </div>
+
+                <div class="card-body">
+
+                    <div class="mb-3">
+
+                        <small class="text-muted">
+                            Expected Amount
+                        </small>
+
+                        <h5>
+                            TSh {{ schedule.expected_amount }}
+                        </h5>
+
+                    </div>
+
+
+                    <div class="mb-3">
+
+                        <small class="text-muted">
+                            Schedule Status
+                        </small>
+
+                        <div>
+
+                            {% if schedule.status == "paid" %}
+
+                                <span class="badge bg-success">
+                                    Paid
+                                </span>
+
+                            {% elif schedule.status == "partial" %}
+
+                                <span class="badge bg-warning text-dark">
+                                    Partial
+                                </span>
+
+                            {% elif schedule.status == "waived" %}
+
+                                <span class="badge bg-secondary">
+                                    Waived
+                                </span>
+
+                            {% else %}
+
+                                <span class="badge bg-danger">
+                                    Pending
+                                </span>
+
+                            {% endif %}
+
+                        </div>
+
+                    </div>
+
+
+                    <div>
+
+                        <small class="text-muted">
+                            Period
+                        </small>
+
+                        <h6>
+                            {{ schedule.period|date:"F Y" }}
+                        </h6>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
 
 </div>
 {% endblock %}

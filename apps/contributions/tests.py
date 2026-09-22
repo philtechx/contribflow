@@ -4,12 +4,22 @@ from decimal import Decimal
 from django.db import IntegrityError
 from django.db.models import Sum
 from django.test import TestCase
+from django.utils import timezone
+
+from apps.contributions.services.contribution_payment_service import (
+    calculate_remaining_balance,
+    calculate_total_paid,
+    create_payment,
+    recalculate_schedule_status,
+)
+from apps.contributions.services.contribution_waiver_service import restore_contribution, waive_contribution
 
 from .services.contribution_schedule_service import (
     generate_monthly_schedules,
 )
 from django.urls import reverse
 from django.contrib.messages import get_messages
+from django.contrib.auth import get_user_model
 from apps.accounts.models import User
 from apps.groups.models import Group
 from apps.memberships.models import Membership
@@ -23,7 +33,9 @@ from .models import (
     ContributionPayment,
     ContributionType,
     ContributionSchedule,
+    ContributionWaiver,
 )
+User = get_user_model()
 
 
 class ContributionCategoryModelTests(TestCase):
@@ -496,6 +508,168 @@ class ContributionScheduleServiceTests(TestCase):
             0,
         )
 
+        # ---------------------------------------------------------
+    # Security: Group isolation
+    # ---------------------------------------------------------
+
+    def test_generation_can_be_scoped_to_selected_group(self):
+        """
+        A group-scoped generation must create schedules only
+        for memberships belonging to the selected group.
+        """
+
+        # Create a second group.
+        group2 = Group.objects.create(
+            name="Second Group",
+            code="SEC",
+        )
+
+        # Create a member belonging to the second group.
+        user3 = User.objects.create_user(
+            email="member3@example.com",
+            password="TestPassword123!",
+        )
+
+        membership3 = Membership.objects.create(
+            user=user3,
+            group=group2,
+            membership_number="SEC-0001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # Generate schedules for the first group only.
+        schedules = generate_monthly_schedules(
+            self.period,
+            group=self.group,
+        )
+
+        # Only the first group's memberships should receive schedules.
+        self.assertEqual(
+            len(schedules),
+            2,
+        )
+
+        self.assertTrue(
+            ContributionSchedule.objects.filter(
+                membership=self.membership1,
+            ).exists()
+        )
+
+        self.assertTrue(
+            ContributionSchedule.objects.filter(
+                membership=self.membership2,
+            ).exists()
+        )
+
+        # The second group's member must not receive a schedule.
+        self.assertFalse(
+            ContributionSchedule.objects.filter(
+                membership=membership3,
+            ).exists()
+        )
+
+
+    def test_generation_does_not_create_schedules_for_other_groups(self):
+        """
+        A group manager must never cause schedule generation
+        for memberships belonging to another group.
+        """
+
+        # Create another group.
+        group2 = Group.objects.create(
+            name="Other Group",
+            code="OTH",
+        )
+
+        # Create an active member in the other group.
+        user3 = User.objects.create_user(
+            email="othermember@example.com",
+            password="TestPassword123!",
+        )
+
+        membership3 = Membership.objects.create(
+            user=user3,
+            group=group2,
+            membership_number="OTH-0001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # Generate schedules only for the first group.
+        generate_monthly_schedules(
+            self.period,
+            group=self.group,
+        )
+
+        # First group should have schedules.
+        self.assertEqual(
+            ContributionSchedule.objects.filter(
+                membership__group=self.group,
+            ).count(),
+            2,
+        )
+
+        # Other group must have zero schedules.
+        self.assertEqual(
+            ContributionSchedule.objects.filter(
+                membership__group=group2,
+            ).count(),
+            0,
+        )
+
+
+    def test_generation_for_second_group_does_not_affect_first_group(self):
+        """
+        Generating schedules for one group must not create or
+        modify schedules belonging to another group.
+        """
+
+        # Create a second group.
+        group2 = Group.objects.create(
+            name="Third Group",
+            code="THI",
+        )
+
+        user3 = User.objects.create_user(
+            email="member4@example.com",
+            password="TestPassword123!",
+        )
+
+        membership3 = Membership.objects.create(
+            user=user3,
+            group=group2,
+            membership_number="THI-0001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # Generate schedules for the second group only.
+        schedules = generate_monthly_schedules(
+            self.period,
+            group=group2,
+        )
+
+        # Only the second group's member should receive a schedule.
+        self.assertEqual(
+            len(schedules),
+            1,
+        )
+
+        self.assertTrue(
+            ContributionSchedule.objects.filter(
+                membership=membership3,
+            ).exists()
+        )
+
+        # First group must remain untouched.
+        self.assertEqual(
+            ContributionSchedule.objects.filter(
+                membership__group=self.group,
+            ).count(),
+            0,
+        )
+
 class ContributionScheduleViewTests(TestCase):
 
     def setUp(self):
@@ -545,7 +719,16 @@ class ContributionScheduleViewTests(TestCase):
             status=Membership.Status.ACTIVE,
         )
 
+        self.url = reverse(
+            "contributions:generate_schedules"
+        )
+
     def test_admin_can_generate_schedules(self):
+        """
+        An active group admin can generate contribution
+        schedules for their own group.
+        """
+
         self.client.login(
             email="admin@example.com",
             password="TestPassword123!",
@@ -557,6 +740,7 @@ class ContributionScheduleViewTests(TestCase):
             ),
             {
                 "month": "2026-08",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -572,7 +756,19 @@ class ContributionScheduleViewTests(TestCase):
             2,
         )
 
+        self.assertEqual(
+            ContributionSchedule.objects.filter(
+                membership__group=self.group,
+            ).count(),
+            2,
+        )
+
     def test_member_cannot_generate_schedules(self):
+        """
+        A normal group member must not be allowed to
+        generate contribution schedules.
+        """
+
         self.client.login(
             email="member@example.com",
             password="TestPassword123!",
@@ -584,6 +780,7 @@ class ContributionScheduleViewTests(TestCase):
             ),
             {
                 "month": "2026-08",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -592,7 +789,17 @@ class ContributionScheduleViewTests(TestCase):
             403,
         )
 
+        self.assertEqual(
+            ContributionSchedule.objects.count(),
+            0,
+        )
+
     def test_unrelated_user_cannot_generate_schedules(self):
+        """
+        A user who has no active membership in the group
+        must not be allowed to generate schedules.
+        """
+
         self.client.login(
             email="outsider@example.com",
             password="TestPassword123!",
@@ -604,6 +811,7 @@ class ContributionScheduleViewTests(TestCase):
             ),
             {
                 "month": "2026-08",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -612,7 +820,16 @@ class ContributionScheduleViewTests(TestCase):
             403,
         )
 
+        self.assertEqual(
+            ContributionSchedule.objects.count(),
+            0,
+        )
+
     def test_generate_requires_month(self):
+        """
+        Schedule generation requires a valid month.
+        """
+
         self.client.login(
             email="admin@example.com",
             password="TestPassword123!",
@@ -622,7 +839,9 @@ class ContributionScheduleViewTests(TestCase):
             reverse(
                 "contributions:generate-schedules"
             ),
-            {},
+            {
+                "group_id": str(self.group.pk),
+            },
         )
 
         self.assertRedirects(
@@ -638,6 +857,10 @@ class ContributionScheduleViewTests(TestCase):
         )
 
     def test_invalid_month_is_rejected(self):
+        """
+        An invalid month must not generate schedules.
+        """
+
         self.client.login(
             email="admin@example.com",
             password="TestPassword123!",
@@ -649,6 +872,7 @@ class ContributionScheduleViewTests(TestCase):
             ),
             {
                 "month": "invalid-month",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -664,7 +888,146 @@ class ContributionScheduleViewTests(TestCase):
             0,
         )
 
+    # ---------------------------------------------------------
+    # Security: Group isolation
+    # ---------------------------------------------------------
 
+    def test_admin_cannot_generate_schedules_for_other_group(self):
+        """
+        An admin must not cause contribution schedules to be
+        generated for members belonging to another group.
+        """
+
+        # Create a second group.
+        other_group = Group.objects.create(
+            name="Other Group",
+            code="OTH",
+        )
+
+        # Create an active member in the other group.
+        other_user = User.objects.create_user(
+            email="othermember@example.com",
+            password="TestPassword123!",
+        )
+
+        other_membership = Membership.objects.create(
+            user=other_user,
+            group=other_group,
+            membership_number="OTH-0001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # Log in as admin of the first group.
+        self.client.login(
+            email="admin@example.com",
+            password="TestPassword123!",
+        )
+
+        # Try to generate schedules for the other group.
+        response = self.client.post(
+            reverse(
+                "contributions:generate-schedules"
+            ),
+            {
+                "month": "2026-08",
+                "group_id": str(other_group.pk),
+            },
+        )
+
+        # The admin must not be allowed to access
+        # another group's schedules.
+        self.assertEqual(
+            response.status_code,
+            404,
+        )
+
+        # The other group's member must NOT receive a schedule.
+        self.assertFalse(
+            ContributionSchedule.objects.filter(
+                membership=other_membership,
+            ).exists()
+        )
+
+        # No schedules should have been generated.
+        self.assertEqual(
+            ContributionSchedule.objects.count(),
+            0,
+        )
+
+    def test_generation_only_affects_admin_group(self):
+        """
+        Schedule generation from a group admin must affect
+        only memberships belonging to that admin's group.
+        """
+
+        # Create another group.
+        other_group = Group.objects.create(
+            name="Second Group",
+            code="SEC",
+        )
+
+        # Create a member in the second group.
+        other_user = User.objects.create_user(
+            email="secondmember@example.com",
+            password="TestPassword123!",
+        )
+
+        other_membership = Membership.objects.create(
+            user=other_user,
+            group=other_group,
+            membership_number="SEC-0001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # Log in as the admin of the first group.
+        self.client.login(
+            email="admin@example.com",
+            password="TestPassword123!",
+        )
+
+        # Generate schedules for the admin's own group.
+        response = self.client.post(
+            reverse(
+                "contributions:generate-schedules"
+            ),
+            {
+                "month": "2026-08",
+                "group_id": str(self.group.pk),
+            },
+        )
+
+        self.assertRedirects(
+            response,
+            reverse(
+                "contributions:dashboard"
+            ),
+        )
+
+        # First group should receive schedules for its two members.
+        self.assertEqual(
+            ContributionSchedule.objects.filter(
+                membership__group=self.group,
+            ).count(),
+            2,
+        )
+
+        # Second group must not be affected.
+        self.assertEqual(
+            ContributionSchedule.objects.filter(
+                membership__group=other_group,
+            ).count(),
+            0,
+        )
+
+        # Explicitly verify that the second group's membership
+        # has no generated schedule.
+        self.assertFalse(
+            ContributionSchedule.objects.filter(
+                membership=other_membership,
+            ).exists()
+        )
 
 class ContributionDashboardTests(TestCase):
 
@@ -841,6 +1204,57 @@ class ContributionDashboardTests(TestCase):
             200,
         )
 
+    # ---------------------------------------------------------
+    # Security: Cross-group isolation
+    # ---------------------------------------------------------
+
+    def test_dashboard_does_not_include_members_from_other_group(self):
+        """
+        An admin must only see members belonging to their own group.
+        Members from another group must not appear in dashboard data.
+        """
+
+        # Create another group.
+        other_group = Group.objects.create(
+            name="Other Dashboard Group",
+            code="ODASH",
+        )
+
+        # Create a member in the other group.
+        other_user = User.objects.create_user(
+            email="other-dashboard-member@example.com",
+            password="TestPassword123!",
+        )
+
+        Membership.objects.create(
+            user=other_user,
+            group=other_group,
+            membership_number="ODASH-0001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # Login as Group A admin.
+        self.client.login(
+            email="admin@example.com",
+            password="TestPassword123!",
+        )
+
+        response = self.client.get(
+            reverse("contributions:dashboard")
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        # Dashboard must still show only Group A members.
+        self.assertEqual(
+            response.context["member_count"],
+            4,
+        )
+
 
 class GenerateSchedulesViewTests(TestCase):
 
@@ -928,6 +1342,7 @@ class GenerateSchedulesViewTests(TestCase):
             self.url,
             {
                 "month": "2026-08",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -951,6 +1366,7 @@ class GenerateSchedulesViewTests(TestCase):
             self.url,
             {
                 "month": "2026-08",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -974,6 +1390,7 @@ class GenerateSchedulesViewTests(TestCase):
             self.url,
             {
                 "month": "2026-08",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -997,6 +1414,7 @@ class GenerateSchedulesViewTests(TestCase):
             self.url,
             {
                 "month": "2026-08",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -1057,6 +1475,7 @@ class GenerateSchedulesViewTests(TestCase):
             self.url,
             {
                 "month": "invalid-month",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -1080,6 +1499,7 @@ class GenerateSchedulesViewTests(TestCase):
             self.url,
             {
                 "month": "2026-08",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -1087,6 +1507,7 @@ class GenerateSchedulesViewTests(TestCase):
             self.url,
             {
                 "month": "2026-08",
+                "group_id": str(self.group.pk),
             },
         )
 
@@ -1851,6 +2272,571 @@ class ContributionPaymentServiceTests(TestCase):
             "Received through mobile money.",
         )
 
+    # ---------------------------------------------------------
+    # calculate_total_paid() Tests
+    # ---------------------------------------------------------
+
+    def test_calculate_total_paid_returns_zero_when_no_payments_exist(self):
+        """
+        Verify that a schedule with no payments has a total
+        paid amount of exactly zero.
+        """
+
+        total_paid = calculate_total_paid(
+            self.schedule
+        )
+
+        self.assertEqual(
+            total_paid,
+            Decimal("0.00"),
+        )
+
+
+    def test_calculate_total_paid_returns_sum_of_all_payments(self):
+        """
+        Verify that calculate_total_paid() correctly sums
+        all payments belonging to the schedule.
+        """
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("3000.00"),
+            payment_date=self.payment_date,
+        )
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("2500.00"),
+            payment_date=self.payment_date,
+        )
+
+        total_paid = calculate_total_paid(
+            self.schedule
+        )
+
+        self.assertEqual(
+            total_paid,
+            Decimal("5500.00"),
+        )
+
+
+    def test_calculate_total_paid_ignores_payments_from_other_schedules(self):
+        """
+        Verify that payments belonging to another schedule
+        are not included in the total.
+        """
+
+        other_schedule = ContributionSchedule.objects.create(
+            membership=self.membership,
+            contribution_type=self.contribution_type,
+            period=date(2026, 9, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("3000.00"),
+            payment_date=self.payment_date,
+        )
+
+        ContributionPayment.objects.create(
+            schedule=other_schedule,
+            amount=Decimal("7000.00"),
+            payment_date=self.payment_date,
+        )
+
+        total_paid = calculate_total_paid(
+            self.schedule
+        )
+
+        self.assertEqual(
+            total_paid,
+            Decimal("3000.00"),
+        )
+
+
+    # ---------------------------------------------------------
+    # calculate_remaining_balance() Tests
+    # ---------------------------------------------------------
+
+    def test_calculate_remaining_balance_returns_full_amount_when_unpaid(self):
+        """
+        Verify that an unpaid schedule has its full expected
+        amount as the remaining balance.
+        """
+
+        remaining_balance = calculate_remaining_balance(
+            self.schedule
+        )
+
+        self.assertEqual(
+            remaining_balance,
+            Decimal("10000.00"),
+        )
+
+
+    def test_calculate_remaining_balance_returns_correct_partial_balance(self):
+        """
+        Verify that the remaining balance is reduced correctly
+        after a partial payment.
+        """
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("3500.00"),
+            payment_date=self.payment_date,
+        )
+
+        remaining_balance = calculate_remaining_balance(
+            self.schedule
+        )
+
+        self.assertEqual(
+            remaining_balance,
+            Decimal("6500.00"),
+        )
+
+
+    def test_calculate_remaining_balance_returns_zero_when_paid_in_full(self):
+        """
+        Verify that the remaining balance becomes zero when
+        the expected contribution has been fully paid.
+        """
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("10000.00"),
+            payment_date=self.payment_date,
+        )
+
+        remaining_balance = calculate_remaining_balance(
+            self.schedule
+        )
+
+        self.assertEqual(
+            remaining_balance,
+            Decimal("0.00"),
+        )
+
+
+    def test_calculate_remaining_balance_never_returns_negative(self):
+        """
+        Verify that the remaining balance is never negative,
+        even if existing database payments exceed the expected
+        contribution amount.
+        """
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("12000.00"),
+            payment_date=self.payment_date,
+        )
+
+        remaining_balance = calculate_remaining_balance(
+            self.schedule
+        )
+
+        self.assertEqual(
+            remaining_balance,
+            Decimal("0.00"),
+        )
+
+
+    # ---------------------------------------------------------
+    # recalculate_schedule_status() Tests
+    # ---------------------------------------------------------
+
+    def test_recalculate_status_sets_pending_when_no_payment_exists(self):
+        """
+        Verify that a schedule with no payments is marked
+        as PENDING.
+        """
+
+        self.schedule.status = (
+            ContributionSchedule.Status.PARTIAL
+        )
+
+        self.schedule.save(
+            update_fields=["status"]
+        )
+
+        recalculate_schedule_status(
+            self.schedule
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PENDING,
+        )
+
+
+    def test_recalculate_status_sets_partial_after_partial_payment(self):
+        """
+        Verify that a schedule with payments below the expected
+        amount is marked as PARTIAL.
+        """
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("4000.00"),
+            payment_date=self.payment_date,
+        )
+
+        self.schedule.status = (
+            ContributionSchedule.Status.PENDING
+        )
+
+        self.schedule.save(
+            update_fields=["status"]
+        )
+
+        recalculate_schedule_status(
+            self.schedule
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PARTIAL,
+        )
+
+
+    def test_recalculate_status_sets_paid_when_fully_paid(self):
+        """
+        Verify that a schedule is marked as PAID when the
+        total payments reach the expected amount.
+        """
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("10000.00"),
+            payment_date=self.payment_date,
+        )
+
+        recalculate_schedule_status(
+            self.schedule
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PAID,
+        )
+
+
+    def test_recalculate_status_preserves_waived_status(self):
+        """
+        Verify that recalculating a waived schedule does not
+        change its WAIVED status.
+        """
+
+        self.schedule.status = (
+            ContributionSchedule.Status.WAIVED
+        )
+
+        self.schedule.save(
+            update_fields=["status"]
+        )
+
+        recalculate_schedule_status(
+            self.schedule
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.WAIVED,
+        )
+
+
+    def test_recalculate_status_handles_multiple_payments(self):
+        """
+        Verify that status is calculated from the combined
+        total of multiple payments.
+        """
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("3000.00"),
+            payment_date=self.payment_date,
+        )
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("4000.00"),
+            payment_date=self.payment_date,
+        )
+
+        recalculate_schedule_status(
+            self.schedule
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PARTIAL,
+        )
+
+
+    # ---------------------------------------------------------
+    # create_payment() Default Value Tests
+    # ---------------------------------------------------------
+
+    def test_create_payment_uses_default_payment_date(self):
+        """
+        Verify that create_payment() automatically uses today's
+        date when payment_date is not supplied.
+        """
+
+        payment = create_payment(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+        )
+
+        self.assertEqual(
+            payment.payment_date,
+            timezone.now().date(),
+        )
+
+
+    def test_create_payment_uses_cash_as_default_payment_method(self):
+        """
+        Verify that CASH is used as the default payment method.
+        """
+
+        payment = create_payment(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=self.payment_date,
+        )
+
+        self.assertEqual(
+            payment.payment_method,
+            ContributionPayment.PaymentMethod.CASH,
+        )
+
+
+    def test_create_payment_normalizes_empty_reference(self):
+        """
+        Verify that an empty or None reference is stored safely
+        as an empty string.
+        """
+
+        payment = create_payment(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=self.payment_date,
+            reference=None,
+        )
+
+        self.assertEqual(
+            payment.reference,
+            "",
+        )
+
+
+    def test_create_payment_normalizes_empty_notes(self):
+        """
+        Verify that an empty or None notes value is stored safely
+        as an empty string.
+        """
+
+        payment = create_payment(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=self.payment_date,
+            notes=None,
+        )
+
+        self.assertEqual(
+            payment.notes,
+            "",
+        )
+
+
+    # ---------------------------------------------------------
+    # create_payment() Boundary Tests
+    # ---------------------------------------------------------
+
+    def test_payment_equal_to_remaining_balance_is_allowed(self):
+        """
+        Verify that a payment exactly equal to the remaining
+        balance is accepted and marks the schedule as PAID.
+        """
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("4000.00"),
+            payment_date=self.payment_date,
+        )
+
+        payment = create_payment(
+            schedule=self.schedule,
+            amount=Decimal("6000.00"),
+            payment_date=self.payment_date,
+        )
+
+        self.assertEqual(
+            payment.amount,
+            Decimal("6000.00"),
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PAID,
+        )
+
+
+    def test_payment_above_remaining_balance_is_rejected(self):
+        """
+        Verify that a payment greater than the remaining balance
+        is rejected.
+        """
+
+        create_payment(
+            schedule=self.schedule,
+            amount=Decimal("6000.00"),
+            payment_date=self.payment_date,
+        )
+
+        with self.assertRaises(ValueError):
+            create_payment(
+                schedule=self.schedule,
+                amount=Decimal("4001.00"),
+                payment_date=self.payment_date,
+            )
+
+
+    def test_rejected_payment_does_not_create_database_record(self):
+        """
+        Verify that a rejected payment does not create a
+        ContributionPayment record.
+        """
+
+        with self.assertRaises(ValueError):
+            create_payment(
+                schedule=self.schedule,
+                amount=Decimal("10001.00"),
+                payment_date=self.payment_date,
+            )
+
+        self.assertEqual(
+            ContributionPayment.objects.count(),
+            0,
+        )
+
+
+    def test_rejected_payment_does_not_change_schedule_status(self):
+        """
+        Verify that a failed payment attempt does not alter
+        the existing schedule status.
+        """
+
+        with self.assertRaises(ValueError):
+            create_payment(
+                schedule=self.schedule,
+                amount=Decimal("10001.00"),
+                payment_date=self.payment_date,
+            )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PENDING,
+        )
+
+
+    # ---------------------------------------------------------
+    # create_payment() Data Integrity Tests
+    # ---------------------------------------------------------
+
+    def test_create_payment_stores_payment_date(self):
+        """
+        Verify that the supplied payment date is stored exactly.
+        """
+
+        payment = create_payment(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=date(2026, 8, 25),
+        )
+
+        self.assertEqual(
+            payment.payment_date,
+            date(2026, 8, 25),
+        )
+
+
+    def test_create_payment_stores_reference(self):
+        """
+        Verify that a supplied payment reference is persisted.
+        """
+
+        payment = create_payment(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=self.payment_date,
+            reference="MPESA-TEST-001",
+        )
+
+        self.assertEqual(
+            payment.reference,
+            "MPESA-TEST-001",
+        )
+
+
+    def test_create_payment_stores_notes(self):
+        """
+        Verify that supplied payment notes are persisted.
+        """
+
+        payment = create_payment(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=self.payment_date,
+            notes="Test payment received.",
+        )
+
+        self.assertEqual(
+            payment.notes,
+            "Test payment received.",
+        )
+
+
+    def test_create_payment_increases_payment_count(self):
+        """
+        Verify that a successful payment creates exactly one
+        new payment record.
+        """
+
+        self.assertEqual(
+            ContributionPayment.objects.count(),
+            0,
+        )
+
+        create_payment(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=self.payment_date,
+        )
+
+        self.assertEqual(
+            ContributionPayment.objects.count(),
+            1,
+        )
+
+
+
 
 class PaymentListViewTests(TestCase):
 
@@ -2479,3 +3465,1347 @@ class PaymentDetailViewTests(TestCase):
             response.context["schedule"],
             self.schedule,
         )
+
+
+class ContributionWaiverServiceTests(TestCase):
+
+    def setUp(self):
+
+        self.group = Group.objects.create(
+            name="Waiver Test Group",
+            code="WTG",
+        )
+
+        self.admin_user = User.objects.create_user(
+            email="waiver-admin@example.com",
+            password="TestPassword123!",
+        )
+
+        self.member_user = User.objects.create_user(
+            email="waiver-member@example.com",
+            password="TestPassword123!",
+        )
+
+        self.admin_membership = Membership.objects.create(
+            user=self.admin_user,
+            group=self.group,
+            membership_number="WTG-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.member_membership = Membership.objects.create(
+            user=self.member_user,
+            group=self.group,
+            membership_number="WTG-MEMBER-001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.category = ContributionCategory.objects.create(
+            name="Waiver Category",
+        )
+
+        self.contribution_type = ContributionType.objects.create(
+            category=self.category,
+            name="Waiver Contribution",
+            amount=Decimal("10000.00"),
+            status=ContributionType.Status.ACTIVE,
+        )
+
+        self.schedule = ContributionSchedule.objects.create(
+            membership=self.member_membership,
+            contribution_type=self.contribution_type,
+            period=date(2026, 8, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+    def test_pending_schedule_can_be_waived(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Approved exemption.",
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.WAIVED,
+        )
+
+    def test_waiver_records_user(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Approved exemption.",
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.waived_by,
+            self.admin_user,
+        )
+
+    def test_waiver_records_datetime(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Approved exemption.",
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertIsNotNone(
+            self.schedule.waived_at,
+        )
+
+    def test_waiver_records_reason(self):
+
+        reason = "Member was officially exempted."
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason=reason,
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.waived_reason,
+            reason,
+        )
+
+    def test_reason_is_required(self):
+
+        with self.assertRaises(
+            ValueError
+        ):
+
+            waive_contribution(
+                schedule=self.schedule,
+                waived_by=self.admin_user,
+                reason="",
+            )
+
+    def test_whitespace_only_reason_is_rejected(self):
+
+        with self.assertRaises(
+            ValueError
+        ):
+
+            waive_contribution(
+                schedule=self.schedule,
+                waived_by=self.admin_user,
+                reason="   ",
+            )
+
+    def test_already_waived_schedule_cannot_be_waived_again(self):
+
+        self.schedule.status = (
+            ContributionSchedule.Status.WAIVED
+        )
+
+        self.schedule.save(
+            update_fields=["status"]
+        )
+
+        with self.assertRaises(
+            ValueError
+        ):
+
+            waive_contribution(
+                schedule=self.schedule,
+                waived_by=self.admin_user,
+                reason="Second waiver.",
+            )
+
+    def test_paid_schedule_cannot_be_waived(self):
+
+        self.schedule.status = (
+            ContributionSchedule.Status.PAID
+        )
+
+        self.schedule.save(
+            update_fields=["status"]
+        )
+
+        with self.assertRaises(
+            ValueError
+        ):
+
+            waive_contribution(
+                schedule=self.schedule,
+                waived_by=self.admin_user,
+                reason="Attempt to waive paid schedule.",
+            )
+
+    def test_partial_schedule_can_be_waived(self):
+
+        self.schedule.status = (
+            ContributionSchedule.Status.PARTIAL
+        )
+
+        self.schedule.save(
+            update_fields=["status"]
+        )
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=date(2026, 8, 15),
+        )
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Remaining balance waived.",
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.WAIVED,
+        )
+
+    def test_partial_payment_is_preserved_after_waiver(self):
+
+        self.schedule.status = (
+            ContributionSchedule.Status.PARTIAL
+        )
+
+        self.schedule.save(
+            update_fields=["status"]
+        )
+
+        payment = ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=date(2026, 8, 15),
+        )
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Remaining balance waived.",
+        )
+
+        self.assertTrue(
+            ContributionPayment.objects.filter(
+                pk=payment.pk
+            ).exists()
+        )
+
+    def test_waiver_creates_history_record(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Approved exemption.",
+        )
+
+        self.assertEqual(
+            ContributionWaiver.objects.count(),
+            1,
+        )
+
+    def test_waiver_history_records_correct_schedule(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Approved exemption.",
+        )
+
+        waiver = ContributionWaiver.objects.get(
+            schedule=self.schedule
+        )
+
+        self.assertEqual(
+            waiver.schedule,
+            self.schedule,
+        )
+
+    def test_waiver_history_records_waived_action(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Approved exemption.",
+        )
+
+        waiver = ContributionWaiver.objects.get(
+            schedule=self.schedule
+        )
+
+        self.assertEqual(
+            waiver.action,
+            ContributionWaiver.Action.WAIVED,
+        )
+
+    def test_waiver_history_records_reason(self):
+
+        reason = "Member was officially exempted."
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason=reason,
+        )
+
+        waiver = ContributionWaiver.objects.get(
+            schedule=self.schedule
+        )
+
+        self.assertEqual(
+            waiver.reason,
+            reason,
+        )
+
+    def test_waiver_history_records_performed_by(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Approved exemption.",
+        )
+
+        waiver = ContributionWaiver.objects.get(
+            schedule=self.schedule
+        )
+
+        self.assertEqual(
+            waiver.performed_by,
+            self.admin_user,
+        )
+
+    def test_waiver_history_records_performed_at(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Approved exemption.",
+        )
+
+        waiver = ContributionWaiver.objects.get(
+            schedule=self.schedule
+        )
+
+        self.assertIsNotNone(
+            waiver.performed_at,
+        )
+
+
+    def test_waived_schedule_without_payments_is_restored_to_pending(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Temporary exemption.",
+        )
+
+        restore_contribution(
+            schedule=self.schedule,
+            restored_by=self.admin_user,
+            reason="Member resumed contribution.",
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PENDING,
+        )
+
+    def test_waived_schedule_with_partial_payment_is_restored_to_partial(self):
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("5000.00"),
+            payment_date=date(2026, 8, 15),
+        )
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Remaining balance temporarily waived.",
+        )
+
+        restore_contribution(
+            schedule=self.schedule,
+            restored_by=self.admin_user,
+            reason="Member resumed contribution.",
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PARTIAL,
+        )
+
+    def test_waived_schedule_with_full_payment_is_restored_to_paid(self):
+
+        ContributionPayment.objects.create(
+            schedule=self.schedule,
+            amount=Decimal("10000.00"),
+            payment_date=date(2026, 8, 15),
+        )
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Temporary exemption.",
+        )
+
+        restore_contribution(
+            schedule=self.schedule,
+            restored_by=self.admin_user,
+            reason="Contribution status reviewed.",
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PAID,
+        )
+
+    def test_non_waived_schedule_cannot_be_restored(self):
+
+        with self.assertRaises(ValueError):
+
+            restore_contribution(
+                schedule=self.schedule,
+                restored_by=self.admin_user,
+                reason="Attempted restore.",
+            )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PENDING,
+        )
+
+    def test_restore_requires_reason(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Temporary exemption.",
+        )
+
+        with self.assertRaises(ValueError):
+
+            restore_contribution(
+                schedule=self.schedule,
+                restored_by=self.admin_user,
+                reason="",
+            )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.WAIVED,
+        )
+
+    def test_whitespace_only_restore_reason_is_rejected(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Temporary exemption.",
+        )
+
+        with self.assertRaises(ValueError):
+
+            restore_contribution(
+                schedule=self.schedule,
+                restored_by=self.admin_user,
+                reason="   ",
+            )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.WAIVED,
+        )
+
+
+
+
+
+class ContributionWaiverViewTests(TestCase):
+
+    def setUp(self):
+
+        self.group = Group.objects.create(
+            name="Waiver View Test Group",
+            code="WV",
+        )
+
+        self.other_group = Group.objects.create(
+            name="Other Waiver Test Group",
+            code="OWV",
+        )
+
+        self.admin_user = User.objects.create_user(
+            email="admin@example.com",
+            password="TestPassword123!",
+        )
+
+        self.member_user = User.objects.create_user(
+            email="member@example.com",
+            password="TestPassword123!",
+        )
+
+        self.other_admin_user = User.objects.create_user(
+            email="other-admin@example.com",
+            password="TestPassword123!",
+        )
+
+        self.admin_membership = Membership.objects.create(
+            user=self.admin_user,
+            group=self.group,
+            membership_number="WV-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.member_membership = Membership.objects.create(
+            user=self.member_user,
+            group=self.group,
+            membership_number="WV-MEMBER-001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.other_admin_membership = Membership.objects.create(
+            user=self.other_admin_user,
+            group=self.other_group,
+            membership_number="OWV-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.category = ContributionCategory.objects.create(
+            name="Waiver View Category",
+        )
+
+        self.contribution_type = ContributionType.objects.create(
+            category=self.category,
+            name="Waiver View Contribution",
+            amount=Decimal("10000.00"),
+            status=ContributionType.Status.ACTIVE,
+        )
+
+        self.schedule = ContributionSchedule.objects.create(
+            membership=self.member_membership,
+            contribution_type=self.contribution_type,
+            period=date(2026, 8, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+    def get_waive_url(self):
+
+        return reverse(
+            "contributions:waive-contribution",
+            kwargs={
+                "schedule_id": self.schedule.pk,
+            },
+        )
+
+    def test_admin_can_access_waiver_page(self):
+
+        self.client.force_login(
+            self.admin_user
+        )
+
+        response = self.client.get(
+            self.get_waive_url()
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertTemplateUsed(
+            response,
+            "contributions/schedules/waive.html",
+        )
+
+    def test_admin_can_waive_pending_schedule(self):
+
+        self.client.force_login(
+            self.admin_user
+        )
+
+        response = self.client.post(
+            self.get_waive_url(),
+            {
+                "reason": (
+                    "Member approved for contribution exemption."
+                ),
+            },
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            response.status_code,
+            302,
+        )
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.WAIVED,
+        )
+
+        self.assertEqual(
+            self.schedule.waived_by,
+            self.admin_user,
+        )
+
+        self.assertEqual(
+            self.schedule.waived_reason,
+            "Member approved for contribution exemption.",
+        )
+
+        self.assertIsNotNone(
+            self.schedule.waived_at,
+        )
+
+    def test_member_cannot_waive_contribution(self):
+
+        self.client.force_login(
+            self.member_user
+        )
+
+        response = self.client.get(
+            self.get_waive_url()
+        )
+
+        self.assertEqual(
+            response.status_code,
+            403,
+        )
+
+    def test_other_group_admin_cannot_waive_contribution(self):
+
+        self.client.force_login(
+            self.other_admin_user
+        )
+
+        response = self.client.get(
+            self.get_waive_url()
+        )
+
+        self.assertEqual(
+            response.status_code,
+            403,
+        )
+
+    def test_waiver_requires_reason(self):
+
+        self.client.force_login(
+            self.admin_user
+        )
+
+        response = self.client.post(
+            self.get_waive_url(),
+            {
+                "reason": "",
+            },
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PENDING,
+        )
+
+        self.assertContains(
+            response,
+            "This field is required.",
+        )
+
+    def test_paid_schedule_cannot_be_waived(self):
+
+        self.schedule.status = (
+            ContributionSchedule.Status.PAID
+        )
+
+        self.schedule.save(
+            update_fields=["status"]
+        )
+
+        self.client.force_login(
+            self.admin_user
+        )
+
+        response = self.client.post(
+            self.get_waive_url(),
+            {
+                "reason": "Attempting to waive paid contribution.",
+            },
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            response.status_code,
+            302,
+        )
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.PAID,
+        )
+
+    def test_already_waived_schedule_redirects(self):
+
+        self.schedule.status = (
+            ContributionSchedule.Status.WAIVED
+        )
+
+        self.schedule.save(
+            update_fields=["status"]
+        )
+
+        self.client.force_login(
+            self.admin_user
+        )
+
+        response = self.client.get(
+            self.get_waive_url()
+        )
+
+        self.assertEqual(
+            response.status_code,
+            302,
+        )
+
+        self.schedule.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule.status,
+            ContributionSchedule.Status.WAIVED,
+        )
+
+    def test_schedule_detail_shows_waiver_history(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Approved exemption.",
+        )
+
+        self.client.force_login(
+            self.admin_user
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={
+                    "schedule_id": self.schedule.pk,
+                },
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertContains(
+            response,
+            "Approved exemption.",
+        )
+
+
+    def test_schedule_detail_shows_restore_history(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Temporary exemption.",
+        )
+
+        restore_contribution(
+            schedule=self.schedule,
+            restored_by=self.admin_user,
+            reason="Contribution restored.",
+        )
+
+        self.client.force_login(
+            self.admin_user
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={
+                    "schedule_id": self.schedule.pk,
+                },
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertContains(
+            response,
+            "Contribution restored.",
+        )
+
+# =============================================================
+# Cross-Group Security Tests
+# =============================================================
+class ContributionCrossGroupSecurityTests(TestCase):
+
+    def setUp(self):
+        # -----------------------------------------------------
+        # Groups
+        # -----------------------------------------------------
+
+        self.group_a = Group.objects.create(
+            name="Security Group A",
+            code="SGA",
+        )
+
+        self.group_b = Group.objects.create(
+            name="Security Group B",
+            code="SGB",
+        )
+
+        # -----------------------------------------------------
+        # Users
+        # -----------------------------------------------------
+
+        self.admin_a = User.objects.create_user(
+            email="security-admin-a@example.com",
+            password="TestPassword123!",
+        )
+
+        self.admin_b = User.objects.create_user(
+            email="security-admin-b@example.com",
+            password="TestPassword123!",
+        )
+
+        # -----------------------------------------------------
+        # Memberships
+        # -----------------------------------------------------
+
+        self.membership_a = Membership.objects.create(
+            user=self.admin_a,
+            group=self.group_a,
+            membership_number="SGA-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.membership_b = Membership.objects.create(
+            user=self.admin_b,
+            group=self.group_b,
+            membership_number="SGB-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # -----------------------------------------------------
+        # Contribution category
+        # -----------------------------------------------------
+
+        self.category = ContributionCategory.objects.create(
+            name="Cross Group Security Category",
+        )
+
+        # -----------------------------------------------------
+        # Contribution type
+        # -----------------------------------------------------
+
+        self.contribution_type = ContributionType.objects.create(
+            category=self.category,
+            name="Cross Group Security Contribution",
+            amount=Decimal("10000.00"),
+            status=ContributionType.Status.ACTIVE,
+        )
+
+        # -----------------------------------------------------
+        # Schedule in Group B
+        # -----------------------------------------------------
+
+        self.schedule_b = ContributionSchedule.objects.create(
+            membership=self.membership_b,
+            contribution_type=self.contribution_type,
+            period=date(2026, 8, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PARTIAL,
+        )
+
+        # -----------------------------------------------------
+        # Payment belonging to Group B
+        # -----------------------------------------------------
+
+        self.payment_b = ContributionPayment.objects.create(
+            schedule=self.schedule_b,
+            amount=Decimal("5000.00"),
+            payment_date=date(2026, 8, 15),
+            payment_method=ContributionPayment.PaymentMethod.CASH,
+            reference="SGB-SECURITY-001",
+            notes="Group B security test payment.",
+        )
+
+    # ---------------------------------------------------------
+    # Schedule Detail
+    # ---------------------------------------------------------
+
+    def test_group_a_admin_cannot_view_group_b_schedule(self):
+
+        self.client.force_login(
+            self.admin_a
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={
+                    "schedule_id": self.schedule_b.pk,
+                },
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            403,
+        )
+
+    # ---------------------------------------------------------
+    # Create Payment
+    # ---------------------------------------------------------
+
+    def test_group_a_admin_cannot_create_payment_for_group_b(self):
+
+        self.client.force_login(
+            self.admin_a
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={
+                    "schedule_id": self.schedule_b.pk,
+                },
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            403,
+        )
+
+        self.assertEqual(
+            ContributionPayment.objects.filter(
+                schedule=self.schedule_b,
+            ).count(),
+            1,
+        )
+
+    # ---------------------------------------------------------
+    # Edit Payment
+    # ---------------------------------------------------------
+
+    def test_group_a_admin_cannot_edit_group_b_payment(self):
+
+        self.client.force_login(
+            self.admin_a
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:payment-edit",
+                kwargs={
+                    "payment_id": self.payment_b.pk,
+                },
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            403,
+        )
+
+        self.payment_b.refresh_from_db()
+
+        self.assertEqual(
+            self.payment_b.amount,
+            Decimal("5000.00"),
+        )
+
+    # ---------------------------------------------------------
+    # Delete Payment
+    # ---------------------------------------------------------
+
+    def test_group_a_admin_cannot_delete_group_b_payment(self):
+
+        self.client.force_login(
+            self.admin_a
+        )
+
+        response = self.client.post(
+            reverse(
+                "contributions:payment-delete",
+                kwargs={
+                    "payment_id": self.payment_b.pk,
+                },
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            403,
+        )
+
+        self.assertTrue(
+            ContributionPayment.objects.filter(
+                pk=self.payment_b.pk,
+            ).exists()
+        )
+
+    # ---------------------------------------------------------
+    # Waive Contribution
+    # ---------------------------------------------------------
+
+    def test_group_a_admin_cannot_waive_group_b_schedule(self):
+
+        self.client.force_login(
+            self.admin_a
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:waive-contribution",
+                kwargs={
+                    "schedule_id": self.schedule_b.pk,
+                },
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            403,
+        )
+
+        self.schedule_b.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule_b.status,
+            ContributionSchedule.Status.PARTIAL,
+        )
+
+    # ---------------------------------------------------------
+    # Restore Contribution
+    # ---------------------------------------------------------
+
+    def test_group_a_admin_cannot_restore_group_b_schedule(self):
+
+        self.schedule_b.status = (
+            ContributionSchedule.Status.WAIVED
+        )
+
+        self.schedule_b.save(
+            update_fields=["status"]
+        )
+
+        self.client.force_login(
+            self.admin_a
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:restore-contribution",
+                kwargs={
+                    "schedule_id": self.schedule_b.pk,
+                },
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            403,
+        )
+
+        self.schedule_b.refresh_from_db()
+
+        self.assertEqual(
+            self.schedule_b.status,
+            ContributionSchedule.Status.WAIVED,
+        )
+    
+
+# =============================================================
+# Dashboard and Schedule List Group Isolation Tests
+# =============================================================
+
+class ContributionListGroupIsolationTests(TestCase):
+
+    def setUp(self):
+        # ---------------------------------------------------------
+        # Groups
+        # ---------------------------------------------------------
+
+        self.group_a = Group.objects.create(
+            name="Dashboard Security Group A",
+            code="DSGA",
+        )
+
+        self.group_b = Group.objects.create(
+            name="Dashboard Security Group B",
+            code="DSGB",
+        )
+
+        # ---------------------------------------------------------
+        # Users
+        # ---------------------------------------------------------
+
+        self.admin_a = User.objects.create_user(
+            email="dashboard-admin-a@example.com",
+            password="TestPassword123!",
+        )
+
+        self.admin_b = User.objects.create_user(
+            email="dashboard-admin-b@example.com",
+            password="TestPassword123!",
+        )
+
+        # ---------------------------------------------------------
+        # Memberships
+        # ---------------------------------------------------------
+
+        self.membership_a = Membership.objects.create(
+            user=self.admin_a,
+            group=self.group_a,
+            membership_number="DSGA-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.membership_b = Membership.objects.create(
+            user=self.admin_b,
+            group=self.group_b,
+            membership_number="DSGB-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # ---------------------------------------------------------
+        # Contribution type
+        # ---------------------------------------------------------
+
+        self.category = ContributionCategory.objects.create(
+            name="List Isolation Category",
+        )
+
+        self.contribution_type = ContributionType.objects.create(
+            category=self.category,
+            name="List Isolation Contribution",
+            amount=Decimal("10000.00"),
+            status=ContributionType.Status.ACTIVE,
+        )
+
+        # ---------------------------------------------------------
+        # Current period
+        # ---------------------------------------------------------
+
+        self.period = date(
+            timezone.now().year,
+            timezone.now().month,
+            1,
+        )
+
+        # ---------------------------------------------------------
+        # Group A schedule
+        # ---------------------------------------------------------
+
+        self.schedule_a = ContributionSchedule.objects.create(
+            membership=self.membership_a,
+            contribution_type=self.contribution_type,
+            period=self.period,
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+        # ---------------------------------------------------------
+        # Group B schedule
+        # ---------------------------------------------------------
+
+        self.schedule_b = ContributionSchedule.objects.create(
+            membership=self.membership_b,
+            contribution_type=self.contribution_type,
+            period=self.period,
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+    # ---------------------------------------------------------
+    # Dashboard Tests
+    # ---------------------------------------------------------
+
+    def test_group_a_admin_dashboard_does_not_show_group_b_schedule(self):
+        """
+        An admin of Group A must not see Group B schedules
+        on the contribution dashboard.
+        """
+
+        self.client.force_login(
+            self.admin_a
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:dashboard"
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        # Group A schedule must be visible.
+        self.assertContains(
+            response,
+            self.schedule_a.membership.membership_number,
+        )
+
+        # Group B schedule must not be visible.
+        self.assertNotContains(
+            response,
+            self.schedule_b.membership.membership_number,
+        )
+
+    def test_group_b_admin_dashboard_does_not_show_group_a_schedule(self):
+        """
+        An admin of Group B must not see Group A schedules
+        on the contribution dashboard.
+        """
+
+        self.client.force_login(
+            self.admin_b
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:dashboard"
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        # Group B schedule must be visible.
+        self.assertContains(
+            response,
+            self.schedule_b.membership.membership_number,
+        )
+
+        # Group A schedule must not be visible.
+        self.assertNotContains(
+            response,
+            self.schedule_a.membership.membership_number,
+        )
+
+    # ---------------------------------------------------------
+    # Schedule List Tests
+    # ---------------------------------------------------------
+
+    def test_group_a_schedule_list_does_not_show_group_b_schedule(self):
+        """
+        An admin of Group A must not see Group B schedules
+        on the schedule list.
+        """
+
+        self.client.force_login(
+            self.admin_a
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-list"
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        # Group A schedule must be visible.
+        self.assertContains(
+            response,
+            self.schedule_a.membership.membership_number,
+        )
+
+        # Group B schedule must not be visible.
+        self.assertNotContains(
+            response,
+            self.schedule_b.membership.membership_number,
+        )
+
+    def test_group_b_schedule_list_does_not_show_group_a_schedule(self):
+        """
+        An admin of Group B must not see Group A schedules
+        on the schedule list.
+        """
+
+        self.client.force_login(
+            self.admin_b
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-list"
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        # Group B schedule must be visible.
+        self.assertContains(
+            response,
+            self.schedule_b.membership.membership_number,
+        )
+
+        # Group A schedule must not be visible.
+        self.assertNotContains(
+            response,
+            self.schedule_a.membership.membership_number,
+        )
+
+

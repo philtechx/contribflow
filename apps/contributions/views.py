@@ -1,6 +1,8 @@
 from datetime import datetime
 from decimal import Decimal
 
+from apps.groups.models import Group
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -9,10 +11,15 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from apps.memberships.models import Membership
+from .services.contribution_waiver_service import (
+    restore_contribution,
+    waive_contribution,
+)
 
 from .forms import (
     ContributionPaymentForm,
     ScheduleGenerationForm,
+    ContributionWaiverForm,
 )
 from .models import (
     ContributionPayment,
@@ -23,6 +30,7 @@ from .services.contribution_payment_service import (
     calculate_remaining_balance,
     calculate_total_paid,
     create_payment,
+    recalculate_schedule_status,
 )
 from .services.contribution_schedule_service import (
     generate_monthly_schedules,
@@ -35,20 +43,58 @@ def generate_schedules_view(request):
     if request.method != "POST":
         raise PermissionDenied
 
-    if not request.user.is_superuser:
+    # ---------------------------------------------------------
+    # Determine groups the current user is allowed to manage
+    # ---------------------------------------------------------
 
-        can_manage = Membership.objects.filter(
-            user=request.user,
-            role__in=[
+    if request.user.is_superuser:
+
+        manageable_groups = Group.objects.filter(
+            is_active=True,
+        )
+
+    else:
+
+        manageable_groups = Group.objects.filter(
+            is_active=True,
+            memberships__user=request.user,
+            memberships__role__in=[
                 Membership.Role.ADMIN,
                 Membership.Role.CHAIRMAN,
                 Membership.Role.TREASURER,
             ],
-            status=Membership.Status.ACTIVE,
-        ).exists()
+            memberships__status=Membership.Status.ACTIVE,
+        ).distinct()
 
-        if not can_manage:
-            raise PermissionDenied
+    if not manageable_groups.exists():
+        raise PermissionDenied
+
+    # ---------------------------------------------------------
+    # Validate selected group
+    # ---------------------------------------------------------
+
+    group_id = request.POST.get(
+        "group_id",
+    )
+
+    if not group_id:
+        messages.error(
+            request,
+            "Please select a group.",
+        )
+
+        return redirect(
+            "contributions:dashboard",
+        )
+
+    group = get_object_or_404(
+        manageable_groups,
+        pk=group_id,
+    )
+
+    # ---------------------------------------------------------
+    # Validate month
+    # ---------------------------------------------------------
 
     form = ScheduleGenerationForm(
         request.POST,
@@ -61,13 +107,18 @@ def generate_schedules_view(request):
         )
 
         return redirect(
-            "contributions:dashboard"
+            "contributions:dashboard",
         )
 
     period = form.cleaned_data["month"]
 
+    # ---------------------------------------------------------
+    # Generate schedules only for the selected group
+    # ---------------------------------------------------------
+
     schedules = generate_monthly_schedules(
-        period
+        period,
+        group=group,
     )
 
     if schedules:
@@ -76,7 +127,8 @@ def generate_schedules_view(request):
             request,
             (
                 f"{len(schedules)} contribution "
-                f"schedule(s) generated successfully."
+                f"schedule(s) generated successfully "
+                f"for {group.name}."
             ),
         )
 
@@ -88,7 +140,7 @@ def generate_schedules_view(request):
         )
 
     return redirect(
-        "contributions:dashboard"
+        "contributions:dashboard",
     )
 
 
@@ -373,7 +425,7 @@ def create_payment_view(
         ).exists()
 
     if not allowed:
-        raise PermissionDenied
+        raise PermissionDenied()
 
     # ---------------------------------------------------------
     # Prevent payment on waived schedule
@@ -526,9 +578,10 @@ def schedule_detail_view(request, schedule_id):
     if not allowed:
         raise PermissionDenied
 
-    # ---------------------------------------------------------
+   # ---------------------------------------------------------
     # Payment history
     # ---------------------------------------------------------
+
     payments = (
         schedule.payments
         .all()
@@ -538,6 +591,19 @@ def schedule_detail_view(request, schedule_id):
         )
     )
 
+    # ---------------------------------------------------------
+    # Waiver history
+    # ---------------------------------------------------------
+
+    waiver_history = (
+        schedule.waiver_history
+        .select_related(
+            "performed_by",
+        )
+        .order_by(
+            "-performed_at",
+        )
+    )
     # ---------------------------------------------------------
     # Payment summary
     # ---------------------------------------------------------
@@ -557,6 +623,7 @@ def schedule_detail_view(request, schedule_id):
     context = {
         "schedule": schedule,
         "payments": payments,
+        "waiver_history": waiver_history,
         "total_paid": total_paid,
         "remaining_balance": remaining_balance,
     }
@@ -706,4 +773,478 @@ def payment_detail_view(request, payment_id):
         "contributions/payments/detail.html",
         context,
     )
+
+
+@login_required
+def edit_payment_view(
+    request,
+    payment_id,
+):
+    """
+    Edit an existing contribution payment.
+    """
+
+    payment = get_object_or_404(
+        ContributionPayment.objects.select_related(
+            "schedule",
+            "schedule__membership",
+            "schedule__membership__user",
+            "schedule__membership__group",
+            "schedule__contribution_type",
+        ),
+        pk=payment_id,
+    )
+
+    schedule = payment.schedule
+
+    # ---------------------------------------------------------
+    # Permission check
+    # ---------------------------------------------------------
+    if request.user.is_superuser:
+
+        allowed = (
+            schedule.membership.status
+            == Membership.Status.ACTIVE
+            and schedule.membership.user.is_active
+            and schedule.membership.group.is_active
+        )
+
+    else:
+
+        allowed = Membership.objects.filter(
+            user=request.user,
+            group=schedule.membership.group,
+            role__in=[
+                Membership.Role.ADMIN,
+                Membership.Role.CHAIRMAN,
+                Membership.Role.TREASURER,
+            ],
+            status=Membership.Status.ACTIVE,
+        ).exists()
+
+    if not allowed:
+        raise PermissionDenied
+
+    # ---------------------------------------------------------
+    # Waived schedule protection
+    # ---------------------------------------------------------
+    if schedule.status == ContributionSchedule.Status.WAIVED:
+
+        messages.error(
+            request,
+            "A payment belonging to a waived schedule cannot be edited.",
+        )
+
+        return redirect(
+            "contributions:payment-detail",
+            payment_id=payment.pk,
+        )
+
+    # ---------------------------------------------------------
+    # Handle form
+    # ---------------------------------------------------------
+    if request.method == "POST":
+
+        form = ContributionPaymentForm(
+            request.POST,
+            instance=payment,
+            schedule=schedule,
+            payment=payment,
+        )
+
+        if form.is_valid():
+
+            updated_payment = form.save()
+
+            recalculate_schedule_status(
+                schedule
+            )
+
+            messages.success(
+                request,
+                "Contribution payment updated successfully.",
+            )
+
+            return redirect(
+                "contributions:payment-detail",
+                payment_id=updated_payment.pk,
+            )
+
+    else:
+
+        form = ContributionPaymentForm(
+            instance=payment,
+            schedule=schedule,
+            payment=payment,
+        )
+
+    total_paid = calculate_total_paid(
+        schedule
+    )
+
+    remaining_balance = calculate_remaining_balance(
+        schedule
+    )
+
+    context = {
+        "form": form,
+        "payment": payment,
+        "schedule": schedule,
+        "total_paid": total_paid,
+        "remaining_balance": remaining_balance,
+    }
+
+    return render(
+        request,
+        "contributions/payments/edit.html",
+        context,
+    )
+
+
+
+@login_required
+def delete_payment_view(
+    request,
+    payment_id,
+):
+    """
+    Delete a contribution payment and recalculate
+    the related contribution schedule.
+    """
+
+    payment = get_object_or_404(
+        ContributionPayment.objects.select_related(
+            "schedule",
+            "schedule__membership",
+            "schedule__membership__user",
+            "schedule__membership__group",
+            "schedule__contribution_type",
+        ),
+        pk=payment_id,
+    )
+
+    schedule = payment.schedule
+
+    # ---------------------------------------------------------
+    # Permission check
+    # ---------------------------------------------------------
+
+    if request.user.is_superuser:
+
+        allowed = (
+            schedule.membership.status
+            == Membership.Status.ACTIVE
+            and schedule.membership.user.is_active
+            and schedule.membership.group.is_active
+        )
+
+    else:
+
+        allowed = Membership.objects.filter(
+            user=request.user,
+            group=schedule.membership.group,
+            role__in=[
+                Membership.Role.ADMIN,
+                Membership.Role.CHAIRMAN,
+                Membership.Role.TREASURER,
+            ],
+            status=Membership.Status.ACTIVE,
+        ).exists()
+
+    if not allowed:
+        raise PermissionDenied
+
+    # ---------------------------------------------------------
+    # Only allow POST for actual deletion
+    # ---------------------------------------------------------
+
+    if request.method == "POST":
+
+        # Store values needed after deletion
+        schedule_id = schedule.pk
+
+        payment.delete()
+
+        # Recalculate schedule after deleting payment
+        recalculate_schedule_status(
+            schedule
+        )
+
+        messages.success(
+            request,
+            "Contribution payment deleted successfully.",
+        )
+
+        return redirect(
+            "contributions:payment-list",
+            schedule_id=schedule_id,
+        )
+
+    context = {
+        "payment": payment,
+        "schedule": schedule,
+    }
+
+    return render(
+        request,
+        "contributions/payments/delete.html",
+        context,
+    )
+
+
+
+@login_required
+def waive_contribution_view(
+    request,
+    schedule_id,
+):
+    """
+    Waive a contribution schedule.
+    """
+
+    schedule = get_object_or_404(
+        ContributionSchedule.objects.select_related(
+            "membership",
+            "membership__user",
+            "membership__group",
+            "contribution_type",
+        ),
+        pk=schedule_id,
+    )
+
+    # ---------------------------------------------------------
+    # Permission check
+    # ---------------------------------------------------------
+
+    if request.user.is_superuser:
+
+        allowed = (
+            schedule.membership.status
+            == Membership.Status.ACTIVE
+            and schedule.membership.user.is_active
+            and schedule.membership.group.is_active
+        )
+
+    else:
+
+        allowed = Membership.objects.filter(
+            user=request.user,
+            group=schedule.membership.group,
+            role__in=[
+                Membership.Role.ADMIN,
+                Membership.Role.CHAIRMAN,
+                Membership.Role.TREASURER,
+            ],
+            status=Membership.Status.ACTIVE,
+        ).exists()
+
+    if not allowed:
+        raise PermissionDenied
+
+    # ---------------------------------------------------------
+    # Already waived
+    # ---------------------------------------------------------
+
+    if schedule.status == ContributionSchedule.Status.WAIVED:
+
+        messages.info(
+            request,
+            "This contribution schedule is already waived.",
+        )
+
+        return redirect(
+            "contributions:schedule-detail",
+            schedule_id=schedule.pk,
+        )
+
+    # ---------------------------------------------------------
+    # Fully paid contributions cannot be waived
+    # ---------------------------------------------------------
+
+    if schedule.status == ContributionSchedule.Status.PAID:
+
+        messages.error(
+            request,
+            "A fully paid contribution cannot be waived.",
+        )
+
+        return redirect(
+            "contributions:schedule-detail",
+            schedule_id=schedule.pk,
+        )
+
+    # ---------------------------------------------------------
+    # Handle form
+    # ---------------------------------------------------------
+
+    if request.method == "POST":
+
+        form = ContributionWaiverForm(
+            request.POST
+        )
+
+        if form.is_valid():
+
+            try:
+
+                waive_contribution(
+                    schedule=schedule,
+                    waived_by=request.user,
+                    reason=form.cleaned_data["reason"],
+                )
+
+            except ValueError as exc:
+
+                form.add_error(
+                    None,
+                    str(exc),
+                )
+
+            else:
+
+                messages.success(
+                    request,
+                    "Contribution waived successfully.",
+                )
+
+                return redirect(
+                    "contributions:schedule-detail",
+                    schedule_id=schedule.pk,
+                )
+
+    else:
+
+        form = ContributionWaiverForm()
+
+    context = {
+        "form": form,
+        "schedule": schedule,
+    }
+
+    return render(
+        request,
+        "contributions/schedules/waive.html",
+        context,
+    )
+
+
+@login_required
+def restore_contribution_view(
+    request,
+    schedule_id,
+):
+    """
+    Restore a waived contribution schedule.
+    """
+
+    schedule = get_object_or_404(
+        ContributionSchedule.objects.select_related(
+            "membership",
+            "membership__user",
+            "membership__group",
+            "contribution_type",
+        ),
+        pk=schedule_id,
+    )
+
+    # ---------------------------------------------------------
+    # Permission check
+    # ---------------------------------------------------------
+
+    if request.user.is_superuser:
+
+        allowed = (
+            schedule.membership.status
+            == Membership.Status.ACTIVE
+            and schedule.membership.user.is_active
+            and schedule.membership.group.is_active
+        )
+
+    else:
+
+        allowed = Membership.objects.filter(
+            user=request.user,
+            group=schedule.membership.group,
+            role__in=[
+                Membership.Role.ADMIN,
+                Membership.Role.CHAIRMAN,
+                Membership.Role.TREASURER,
+            ],
+            status=Membership.Status.ACTIVE,
+        ).exists()
+
+    if not allowed:
+        raise PermissionDenied
+
+    # ---------------------------------------------------------
+    # Only waived contributions can be restored
+    # ---------------------------------------------------------
+
+    if schedule.status != ContributionSchedule.Status.WAIVED:
+
+        messages.error(
+            request,
+            "Only a waived contribution can be restored.",
+        )
+
+        return redirect(
+            "contributions:schedule-detail",
+            schedule_id=schedule.pk,
+        )
+
+    # ---------------------------------------------------------
+    # Handle form
+    # ---------------------------------------------------------
+
+    if request.method == "POST":
+
+        form = ContributionWaiverForm(
+            request.POST
+        )
+
+        if form.is_valid():
+
+            try:
+
+                restore_contribution(
+                    schedule=schedule,
+                    restored_by=request.user,
+                    reason=form.cleaned_data["reason"],
+                )
+
+            except ValueError as exc:
+
+                form.add_error(
+                    None,
+                    str(exc),
+                )
+
+            else:
+
+                messages.success(
+                    request,
+                    "Contribution restored successfully.",
+                )
+
+                return redirect(
+                    "contributions:schedule-detail",
+                    schedule_id=schedule.pk,
+                )
+
+    else:
+
+        form = ContributionWaiverForm()
+
+    context = {
+        "form": form,
+        "schedule": schedule,
+    }
+
+    return render(
+        request,
+        "contributions/schedules/restore.html",
+        context,
+    )
+
+
 

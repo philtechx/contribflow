@@ -9,10 +9,16 @@ from ..models import (
 
 
 @transaction.atomic
-def generate_monthly_schedules(period):
+def generate_monthly_schedules(period, group=None):
     """
-    Generate contribution schedules for all active memberships
-    and all active contribution types for a given month.
+    Generate contribution schedules for active memberships.
+
+    If a group is provided, schedules are generated only for
+    active memberships belonging to that group.
+
+    If no group is provided, schedules are generated for all
+    active memberships. This preserves the existing service
+    behavior for existing callers.
     """
 
     period = period.replace(day=1)
@@ -26,6 +32,14 @@ def generate_monthly_schedules(period):
         )
         .select_related("user", "group")
     )
+
+    # ---------------------------------------------------------
+    # Security: restrict generation to the selected group
+    # ---------------------------------------------------------
+    if group is not None:
+        memberships = memberships.filter(
+            group=group,
+        )
 
     contribution_types = (
         ContributionType.objects

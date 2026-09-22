@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block title %}
+Waive Contribution
+{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+
+    <div class="row justify-content-center">
+
+        <div class="col-lg-8">
+
+            <div class="d-flex justify-content-between align-items-center mb-4">
+
+                <div>
+                    <h3 class="mb-1">
+                        Waive Contribution
+                    </h3>
+
+                    <p class="text-muted mb-0">
+                        {{ schedule.contribution_type }}
+                    </p>
+                </div>
+
+                <a
+                    href="{% url 'contributions:schedule-detail' schedule.pk %}"
+                    class="btn btn-secondary"
+                >
+                    Back to Schedule
+                </a>
+
+            </div>
+
+
+            <div class="card shadow-sm border-warning">
+
+                <div class="card-header bg-warning">
+                    Waiver Confirmation
+                </div>
+
+                <div class="card-body">
+
+                    <div class="alert alert-warning">
+
+                        <strong>Warning:</strong>
+
+                        Waiving this contribution means the member
+                        will no longer be required to pay the
+                        outstanding contribution amount.
+
+                    </div>
+
+
+                    <table class="table table-bordered">
+
+                        <tr>
+                            <th style="width: 35%;">
+                                Member
+                            </th>
+
+                            <td>
+                                {{ schedule.membership.user }}
+                            </td>
+                        </tr>
+
+
+                        <tr>
+                            <th>
+                                Group
+                            </th>
+
+                            <td>
+                                {{ schedule.membership.group }}
+                            </td>
+                        </tr>
+
+
+                        <tr>
+                            <th>
+                                Contribution
+                            </th>
+
+                            <td>
+                                {{ schedule.contribution_type }}
+                            </td>
+                        </tr>
+
+
+                        <tr>
+                            <th>
+                                Period
+                            </th>
+
+                            <td>
+                                {{ schedule.period|date:"F Y" }}
+                            </td>
+                        </tr>
+
+
+                        <tr>
+                            <th>
+                                Expected Amount
+                            </th>
+
+                            <td>
+                                TSh {{ schedule.expected_amount }}
+                            </td>
+                        </tr>
+
+
+                        <tr>
+                            <th>
+                                Current Status
+                            </th>
+
+                            <td>
+
+                                {% if schedule.status == "partial" %}
+
+                                    <span class="badge bg-warning text-dark">
+                                        Partial
+                                    </span>
+
+                                {% else %}
+
+                                    <span class="badge bg-danger">
+                                        Pending
+                                    </span>
+
+                                {% endif %}
+
+                            </td>
+                        </tr>
+
+                    </table>
+
+
+                    <form method="post">
+
+                        {% csrf_token %}
+
+
+                        {% if form.non_field_errors %}
+
+                            <div class="alert alert-danger">
+
+                                {{ form.non_field_errors }}
+
+                            </div>
+
+                        {% endif %}
+
+
+                        <div class="mb-3">
+
+                            <label
+                                for="{{ form.reason.id_for_label }}"
+                                class="form-label"
+                            >
+                                Waiver Reason
+                            </label>
+
+                            {{ form.reason }}
+
+                            {% if form.reason.errors %}
+
+                                <div class="text-danger mt-1">
+
+                                    {{ form.reason.errors }}
+
+                                </div>
+
+                            {% endif %}
+
+                        </div>
+
+
+                        <div class="d-flex gap-2">
+
+                            <a
+                                href="{% url 'contributions:schedule-detail' schedule.pk %}"
+                                class="btn btn-secondary"
+                            >
+                                Cancel
+                            </a>
+
+
+                            <button
+                                type="submit"
+                                class="btn btn-warning"
+                            >
+                                Confirm Waiver
+                            </button>
+
+                        </div>
+
+                    </form>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+{% endblock %}

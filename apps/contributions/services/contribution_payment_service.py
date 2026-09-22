@@ -38,6 +38,43 @@ def calculate_remaining_balance(schedule):
 
     return remaining
 
+@transaction.atomic
+def recalculate_schedule_status(schedule):
+    """
+    Recalculate the contribution schedule status based on
+    the total recorded payments.
+    """
+
+    total_paid = calculate_total_paid(schedule)
+
+    expected_amount = Decimal(
+        str(schedule.expected_amount)
+    )
+
+    if schedule.status == ContributionSchedule.Status.WAIVED:
+        return schedule
+
+    if total_paid <= Decimal("0.00"):
+        new_status = ContributionSchedule.Status.PENDING
+
+    elif total_paid < expected_amount:
+        new_status = ContributionSchedule.Status.PARTIAL
+
+    else:
+        new_status = ContributionSchedule.Status.PAID
+
+    if schedule.status != new_status:
+        schedule.status = new_status
+
+        schedule.save(
+            update_fields=[
+                "status",
+                "updated_at",
+            ]
+        )
+
+    return schedule
+
 
 @transaction.atomic
 def create_payment(
