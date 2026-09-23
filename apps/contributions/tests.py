@@ -4279,6 +4279,39 @@ class ContributionWaiverViewTests(TestCase):
             "Contribution restored.",
         )
 
+
+    def test_admin_can_access_restore_page(self):
+
+        waive_contribution(
+            schedule=self.schedule,
+            waived_by=self.admin_user,
+            reason="Temporary exemption.",
+        )
+
+        self.client.force_login(
+            self.admin_user
+        )
+
+        response = self.client.get(
+            reverse(
+                "contributions:restore-contribution",
+                kwargs={
+                    "schedule_id": self.schedule.pk,
+                },
+            )
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertTemplateUsed(
+            response,
+            "contributions/schedules/restore.html",
+        )
+
+
 # =============================================================
 # Cross-Group Security Tests
 # =============================================================
