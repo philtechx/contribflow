@@ -4809,3 +4809,1088 @@ class ContributionListGroupIsolationTests(TestCase):
         )
 
 
+# =============================================================
+# Inactive and Suspended Membership Security Tests
+# =============================================================
+
+class ContributionInactiveMembershipSecurityTests(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(
+            name="Membership Security Group",
+            code="MSG",
+        )
+
+        self.user = User.objects.create_user(
+            email="inactive-membership@example.com",
+            password="TestPassword123!",
+        )
+
+        self.membership = Membership.objects.create(
+            user=self.user,
+            group=self.group,
+            membership_number="MSG-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.category = ContributionCategory.objects.create(
+            name="Inactive Membership Category",
+        )
+
+        self.contribution_type = ContributionType.objects.create(
+            category=self.category,
+            name="Inactive Membership Contribution",
+            amount=Decimal("10000.00"),
+            status=ContributionType.Status.ACTIVE,
+        )
+
+        self.schedule = ContributionSchedule.objects.create(
+            membership=self.membership,
+            contribution_type=self.contribution_type,
+            period=date(2026, 9, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+    def test_inactive_membership_cannot_view_schedule(self):
+        """
+        An inactive membership must not access
+        contribution schedule details.
+        """
+
+        self.membership.status = Membership.Status.INACTIVE
+        self.membership.save(update_fields=["status"])
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_suspended_membership_cannot_view_schedule(self):
+        """
+        A suspended membership must not access
+        contribution schedule details.
+        """
+
+        self.membership.status = Membership.Status.SUSPENDED
+        self.membership.save(update_fields=["status"])
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_inactive_membership_cannot_create_payment(self):
+        """
+        An inactive membership must not create
+        a contribution payment.
+        """
+
+        self.membership.status = Membership.Status.INACTIVE
+        self.membership.save(update_fields=["status"])
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        self.assertEqual(
+            ContributionPayment.objects.filter(
+                schedule=self.schedule
+            ).count(),
+            0,
+        )
+
+    def test_suspended_membership_cannot_create_payment(self):
+        """
+        A suspended membership must not create
+        a contribution payment.
+        """
+
+        self.membership.status = Membership.Status.SUSPENDED
+        self.membership.save(update_fields=["status"])
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        self.assertEqual(
+            ContributionPayment.objects.filter(
+                schedule=self.schedule
+            ).count(),
+            0,
+        )
+
+
+# =============================================================
+# Inactive User Security Tests
+# =============================================================
+
+class ContributionInactiveUserSecurityTests(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(
+            name="Inactive User Security Group",
+            code="IUS",
+        )
+
+        self.user = User.objects.create_user(
+            email="inactive-user@example.com",
+            password="TestPassword123!",
+        )
+
+        self.membership = Membership.objects.create(
+            user=self.user,
+            group=self.group,
+            membership_number="IUS-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.category = ContributionCategory.objects.create(
+            name="Inactive User Category",
+        )
+
+        self.contribution_type = ContributionType.objects.create(
+            category=self.category,
+            name="Inactive User Contribution",
+            amount=Decimal("10000.00"),
+            status=ContributionType.Status.ACTIVE,
+        )
+
+        self.schedule = ContributionSchedule.objects.create(
+            membership=self.membership,
+            contribution_type=self.contribution_type,
+            period=date(2026, 9, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+    def test_inactive_user_cannot_view_schedule(self):
+        """
+        An inactive user should not access contribution schedules.
+
+        Django authentication redirects inactive users to the login page
+        before the contribution view is reached.
+        """
+
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        # Inactive users are redirected to the login page.
+        self.assertEqual(response.status_code, 302)
+
+        # Confirm that the redirect destination is the login page.
+        self.assertIn(
+            "/accounts/login/",
+            response.get("Location", ""),
+        )
+
+    def test_inactive_user_cannot_create_payment(self):
+        """
+        An inactive user should not be able to access payment creation.
+
+        Django authentication redirects inactive users to the login page
+        before the contribution view is reached.
+        """
+
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        # Inactive users are redirected to the login page.
+        self.assertEqual(response.status_code, 302)
+
+        # Confirm that the redirect destination is the login page.
+        self.assertIn(
+            "/accounts/login/",
+            response.get("Location", ""),
+        )
+
+        # Confirm that no payment was created.
+        self.assertEqual(
+            ContributionPayment.objects.filter(
+                schedule=self.schedule
+            ).count(),
+            0,
+        )
+
+    def test_inactive_user_cannot_view_payment_list(self):
+        """
+        An inactive user should not access the payment list.
+
+        Django authentication redirects inactive users to the login page
+        before the contribution view is reached.
+        """
+
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "contributions:payment-list",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        # Inactive users are redirected to the login page.
+        self.assertEqual(response.status_code, 302)
+
+        # Confirm that the redirect destination is the login page.
+        self.assertIn(
+            "/accounts/login/",
+            response.get("Location", ""),
+        )
+
+
+# =============================================================
+# Role Boundary Security Tests
+# =============================================================
+
+class ContributionRoleBoundarySecurityTests(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(
+            name="Role Security Group",
+            code="RSG",
+        )
+
+        # ---------------------------------------------------------
+        # Create users with different roles
+        # ---------------------------------------------------------
+
+        self.secretary = User.objects.create_user(
+            email="role-secretary@example.com",
+            password="TestPassword123!",
+        )
+
+        self.member = User.objects.create_user(
+            email="role-member@example.com",
+            password="TestPassword123!",
+        )
+
+        # ---------------------------------------------------------
+        # Create memberships
+        # ---------------------------------------------------------
+
+        self.secretary_membership = Membership.objects.create(
+            user=self.secretary,
+            group=self.group,
+            membership_number="RSG-SECRETARY-001",
+            role=Membership.Role.SECRETARY,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.member_membership = Membership.objects.create(
+            user=self.member,
+            group=self.group,
+            membership_number="RSG-MEMBER-001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # ---------------------------------------------------------
+        # Create contribution data
+        # ---------------------------------------------------------
+
+        self.category = ContributionCategory.objects.create(
+            name="Role Security Category",
+        )
+
+        self.contribution_type = ContributionType.objects.create(
+            category=self.category,
+            name="Role Security Contribution",
+            amount=Decimal("10000.00"),
+            status=ContributionType.Status.ACTIVE,
+        )
+
+        self.schedule_secretary = ContributionSchedule.objects.create(
+            membership=self.secretary_membership,
+            contribution_type=self.contribution_type,
+            period=date(2026, 9, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+        self.schedule_member = ContributionSchedule.objects.create(
+            membership=self.member_membership,
+            contribution_type=self.contribution_type,
+            period=date(2026, 9, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+    # =============================================================
+    # SECRETARY SECURITY TESTS
+    # =============================================================
+
+    def test_secretary_cannot_view_schedule(self):
+        """
+        SECRETARY should not be allowed to access contribution
+        schedule management.
+        """
+
+        self.client.force_login(self.secretary)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={"schedule_id": self.schedule_secretary.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_secretary_cannot_create_payment(self):
+        """
+        SECRETARY should not be allowed to access payment creation.
+        """
+
+        self.client.force_login(self.secretary)
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={"schedule_id": self.schedule_secretary.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        # Confirm that no payment was created.
+        self.assertEqual(
+            ContributionPayment.objects.filter(
+                schedule=self.schedule_secretary
+            ).count(),
+            0,
+        )
+
+    def test_secretary_cannot_view_payment_list(self):
+        """
+        SECRETARY should not be allowed to view payment management.
+        """
+
+        self.client.force_login(self.secretary)
+
+        response = self.client.get(
+            reverse(
+                "contributions:payment-list",
+                kwargs={"schedule_id": self.schedule_secretary.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_secretary_cannot_waive_contribution(self):
+        """
+        SECRETARY should not be allowed to waive contributions.
+        """
+
+        self.client.force_login(self.secretary)
+
+        response = self.client.get(
+            reverse(
+                "contributions:waive-contribution",
+                kwargs={"schedule_id": self.schedule_secretary.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        self.schedule_secretary.refresh_from_db()
+
+        # Confirm that the contribution was not waived.
+        self.assertEqual(
+            self.schedule_secretary.status,
+            ContributionSchedule.Status.PENDING,
+        )
+
+    # =============================================================
+    # MEMBER SECURITY TESTS
+    # =============================================================
+
+    def test_member_cannot_view_schedule(self):
+        """
+        MEMBER should not be allowed to access contribution
+        schedule management.
+        """
+
+        self.client.force_login(self.member)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={"schedule_id": self.schedule_member.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_member_cannot_create_payment(self):
+        """
+        MEMBER should not be allowed to access payment creation.
+        """
+
+        self.client.force_login(self.member)
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={"schedule_id": self.schedule_member.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        # Confirm that no payment was created.
+        self.assertEqual(
+            ContributionPayment.objects.filter(
+                schedule=self.schedule_member
+            ).count(),
+            0,
+        )
+
+    def test_member_cannot_view_payment_list(self):
+        """
+        MEMBER should not be allowed to view payment management.
+        """
+
+        self.client.force_login(self.member)
+
+        response = self.client.get(
+            reverse(
+                "contributions:payment-list",
+                kwargs={"schedule_id": self.schedule_member.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_member_cannot_waive_contribution(self):
+        """
+        MEMBER should not be allowed to waive contributions.
+        """
+
+        self.client.force_login(self.member)
+
+        response = self.client.get(
+            reverse(
+                "contributions:waive-contribution",
+                kwargs={"schedule_id": self.schedule_member.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        self.schedule_member.refresh_from_db()
+
+        # Confirm that the contribution was not waived.
+        self.assertEqual(
+            self.schedule_member.status,
+            ContributionSchedule.Status.PENDING,
+        )
+
+
+# =============================================================
+# Positive Role Security Tests
+# =============================================================
+
+class ContributionAllowedRoleSecurityTests(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(
+            name="Allowed Role Security Group",
+            code="ARSG",
+        )
+
+        # ---------------------------------------------------------
+        # Create users for allowed roles
+        # ---------------------------------------------------------
+
+        self.admin = User.objects.create_user(
+            email="allowed-admin@example.com",
+            password="TestPassword123!",
+        )
+
+        self.chairman = User.objects.create_user(
+            email="allowed-chairman@example.com",
+            password="TestPassword123!",
+        )
+
+        self.treasurer = User.objects.create_user(
+            email="allowed-treasurer@example.com",
+            password="TestPassword123!",
+        )
+
+        # ---------------------------------------------------------
+        # Create active memberships
+        # ---------------------------------------------------------
+
+        self.admin_membership = Membership.objects.create(
+            user=self.admin,
+            group=self.group,
+            membership_number="ARSG-ADMIN-001",
+            role=Membership.Role.ADMIN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.chairman_membership = Membership.objects.create(
+            user=self.chairman,
+            group=self.group,
+            membership_number="ARSG-CHAIRMAN-001",
+            role=Membership.Role.CHAIRMAN,
+            status=Membership.Status.ACTIVE,
+        )
+
+        self.treasurer_membership = Membership.objects.create(
+            user=self.treasurer,
+            group=self.group,
+            membership_number="ARSG-TREASURER-001",
+            role=Membership.Role.TREASURER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # ---------------------------------------------------------
+        # Create contribution data
+        # ---------------------------------------------------------
+
+        self.category = ContributionCategory.objects.create(
+            name="Allowed Role Category",
+        )
+
+        self.contribution_type = ContributionType.objects.create(
+            category=self.category,
+            name="Allowed Role Contribution",
+            amount=Decimal("10000.00"),
+            status=ContributionType.Status.ACTIVE,
+        )
+
+        self.schedule = ContributionSchedule.objects.create(
+            membership=self.admin_membership,
+            contribution_type=self.contribution_type,
+            period=date(2026, 9, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+    # =============================================================
+    # ADMIN
+    # =============================================================
+
+    def test_admin_can_view_schedule(self):
+        """
+        ADMIN should be allowed to view contribution schedules.
+        """
+
+        self.client.force_login(self.admin)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_admin_can_access_create_payment(self):
+        """
+        ADMIN should be allowed to access payment creation.
+        """
+
+        self.client.force_login(self.admin)
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_admin_can_view_payment_list(self):
+        """
+        ADMIN should be allowed to view payment management.
+        """
+
+        self.client.force_login(self.admin)
+
+        response = self.client.get(
+            reverse(
+                "contributions:payment-list",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    # =============================================================
+    # CHAIRMAN
+    # =============================================================
+
+    def test_chairman_can_view_schedule(self):
+        """
+        CHAIRMAN should be allowed to view contribution schedules.
+        """
+
+        self.client.force_login(self.chairman)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_chairman_can_access_create_payment(self):
+        """
+        CHAIRMAN should be allowed to access payment creation.
+        """
+
+        self.client.force_login(self.chairman)
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_chairman_can_view_payment_list(self):
+        """
+        CHAIRMAN should be allowed to view payment management.
+        """
+
+        self.client.force_login(self.chairman)
+
+        response = self.client.get(
+            reverse(
+                "contributions:payment-list",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    # =============================================================
+    # TREASURER
+    # =============================================================
+
+    def test_treasurer_can_view_schedule(self):
+        """
+        TREASURER should be allowed to view contribution schedules.
+        """
+
+        self.client.force_login(self.treasurer)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_treasurer_can_access_create_payment(self):
+        """
+        TREASURER should be allowed to access payment creation.
+        """
+
+        self.client.force_login(self.treasurer)
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_treasurer_can_view_payment_list(self):
+        """
+        TREASURER should be allowed to view payment management.
+        """
+
+        self.client.force_login(self.treasurer)
+
+        response = self.client.get(
+            reverse(
+                "contributions:payment-list",
+                kwargs={"schedule_id": self.schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+
+# =============================================================
+# Superuser Security Tests
+# =============================================================
+
+class ContributionSuperuserSecurityTests(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(
+            name="Superuser Security Group",
+            code="SUSG",
+        )
+
+        self.superuser = User.objects.create_superuser(
+            email="superuser-security@example.com",
+            password="TestPassword123!",
+        )
+
+        # ---------------------------------------------------------
+        # Active target user and membership
+        # ---------------------------------------------------------
+
+        self.active_user = User.objects.create_user(
+            email="active-target@example.com",
+            password="TestPassword123!",
+        )
+
+        self.active_membership = Membership.objects.create(
+            user=self.active_user,
+            group=self.group,
+            membership_number="SUSG-ACTIVE-001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # ---------------------------------------------------------
+        # Inactive membership
+        # ---------------------------------------------------------
+
+        self.inactive_membership_user = User.objects.create_user(
+            email="inactive-membership-target@example.com",
+            password="TestPassword123!",
+        )
+
+        self.inactive_membership = Membership.objects.create(
+            user=self.inactive_membership_user,
+            group=self.group,
+            membership_number="SUSG-INACTIVE-MEM-001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.INACTIVE,
+        )
+
+        # ---------------------------------------------------------
+        # Suspended membership
+        # ---------------------------------------------------------
+
+        self.suspended_membership_user = User.objects.create_user(
+            email="suspended-membership-target@example.com",
+            password="TestPassword123!",
+        )
+
+        self.suspended_membership = Membership.objects.create(
+            user=self.suspended_membership_user,
+            group=self.group,
+            membership_number="SUSG-SUSPENDED-MEM-001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.SUSPENDED,
+        )
+
+        # ---------------------------------------------------------
+        # Inactive user
+        # ---------------------------------------------------------
+
+        self.inactive_user = User.objects.create_user(
+            email="inactive-target@example.com",
+            password="TestPassword123!",
+            is_active=False,
+        )
+
+        self.inactive_user_membership = Membership.objects.create(
+            user=self.inactive_user,
+            group=self.group,
+            membership_number="SUSG-INACTIVE-USER-001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # ---------------------------------------------------------
+        # Inactive group
+        # ---------------------------------------------------------
+
+        self.inactive_group = Group.objects.create(
+            name="Inactive Superuser Group",
+            code="ISUG",
+            is_active=False,
+        )
+
+        self.inactive_group_user = User.objects.create_user(
+            email="inactive-group-target@example.com",
+            password="TestPassword123!",
+        )
+
+        self.inactive_group_membership = Membership.objects.create(
+            user=self.inactive_group_user,
+            group=self.inactive_group,
+            membership_number="ISUG-MEMBER-001",
+            role=Membership.Role.MEMBER,
+            status=Membership.Status.ACTIVE,
+        )
+
+        # ---------------------------------------------------------
+        # Contribution category and type
+        # ---------------------------------------------------------
+
+        self.category = ContributionCategory.objects.create(
+            name="Superuser Security Category",
+        )
+
+        self.contribution_type = ContributionType.objects.create(
+            category=self.category,
+            name="Superuser Security Contribution",
+            amount=Decimal("10000.00"),
+            status=ContributionType.Status.ACTIVE,
+        )
+
+        # ---------------------------------------------------------
+        # Schedules
+        # ---------------------------------------------------------
+
+        self.active_schedule = ContributionSchedule.objects.create(
+            membership=self.active_membership,
+            contribution_type=self.contribution_type,
+            period=date(2026, 9, 1),
+            expected_amount=Decimal("10000.00"),
+            status=ContributionSchedule.Status.PENDING,
+        )
+
+        self.inactive_membership_schedule = (
+            ContributionSchedule.objects.create(
+                membership=self.inactive_membership,
+                contribution_type=self.contribution_type,
+                period=date(2026, 9, 1),
+                expected_amount=Decimal("10000.00"),
+                status=ContributionSchedule.Status.PENDING,
+            )
+        )
+
+        self.suspended_membership_schedule = (
+            ContributionSchedule.objects.create(
+                membership=self.suspended_membership,
+                contribution_type=self.contribution_type,
+                period=date(2026, 9, 1),
+                expected_amount=Decimal("10000.00"),
+                status=ContributionSchedule.Status.PENDING,
+            )
+        )
+
+        self.inactive_user_schedule = (
+            ContributionSchedule.objects.create(
+                membership=self.inactive_user_membership,
+                contribution_type=self.contribution_type,
+                period=date(2026, 9, 1),
+                expected_amount=Decimal("10000.00"),
+                status=ContributionSchedule.Status.PENDING,
+            )
+        )
+
+        self.inactive_group_schedule = (
+            ContributionSchedule.objects.create(
+                membership=self.inactive_group_membership,
+                contribution_type=self.contribution_type,
+                period=date(2026, 9, 1),
+                expected_amount=Decimal("10000.00"),
+                status=ContributionSchedule.Status.PENDING,
+            )
+        )
+
+    # =============================================================
+    # SUPERUSER - ACTIVE TARGET
+    # =============================================================
+
+    def test_superuser_can_view_active_schedule(self):
+        """
+        A superuser should be allowed to view a schedule when the
+        target membership, user, and group are all active.
+        """
+
+        self.client.force_login(self.superuser)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={"schedule_id": self.active_schedule.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    # =============================================================
+    # SUPERUSER - INACTIVE MEMBERSHIP
+    # =============================================================
+
+    def test_superuser_cannot_view_inactive_membership_schedule(self):
+        """
+        A superuser should not access a schedule belonging to an
+        inactive membership.
+        """
+
+        self.client.force_login(self.superuser)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={
+                    "schedule_id": self.inactive_membership_schedule.pk
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    # =============================================================
+    # SUPERUSER - SUSPENDED MEMBERSHIP
+    # =============================================================
+
+    def test_superuser_cannot_view_suspended_membership_schedule(self):
+        """
+        A superuser should not access a schedule belonging to a
+        suspended membership.
+        """
+
+        self.client.force_login(self.superuser)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={
+                    "schedule_id": self.suspended_membership_schedule.pk
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    # =============================================================
+    # SUPERUSER - INACTIVE USER
+    # =============================================================
+
+    def test_superuser_cannot_view_inactive_user_schedule(self):
+        """
+        A superuser should not access a schedule belonging to an
+        inactive user.
+        """
+
+        self.client.force_login(self.superuser)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={
+                    "schedule_id": self.inactive_user_schedule.pk
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    # =============================================================
+    # SUPERUSER - INACTIVE GROUP
+    # =============================================================
+
+    def test_superuser_cannot_view_inactive_group_schedule(self):
+        """
+        A superuser should not access a schedule belonging to an
+        inactive group.
+        """
+
+        self.client.force_login(self.superuser)
+
+        response = self.client.get(
+            reverse(
+                "contributions:schedule-detail",
+                kwargs={
+                    "schedule_id": self.inactive_group_schedule.pk
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    # =============================================================
+    # SUPERUSER - PAYMENT CREATION
+    # =============================================================
+
+    def test_superuser_cannot_create_payment_for_inactive_membership(self):
+        """
+        A superuser should not create a payment for an inactive
+        membership.
+        """
+
+        self.client.force_login(self.superuser)
+
+        response = self.client.get(
+            reverse(
+                "contributions:create-payment",
+                kwargs={
+                    "schedule_id": self.inactive_membership_schedule.pk
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        # Confirm that no payment was created.
+        self.assertEqual(
+            ContributionPayment.objects.filter(
+                schedule=self.inactive_membership_schedule
+            ).count(),
+            0,
+        )
